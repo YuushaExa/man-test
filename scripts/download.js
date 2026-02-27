@@ -9,6 +9,7 @@ import { FormData } from 'formdata-node';
 import { fileFromPath } from 'formdata-node/file-from-path';
 
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
+const TELEGRAM_FILE_LIMIT = 50 * 1024 * 1024; // 50MB
 
 async function sendText(chatId, text, replyToMessageId = null) {
   if (!process.env.TELEGRAM_BOT_TOKEN) return null;
@@ -34,8 +35,7 @@ async function sendDocument(chatId, filePath, fileName, caption = '', replyToMes
   if (caption) form.append('caption', caption.substring(0, 1024));
   if (replyToMessageId) form.append('reply_to_message_id', replyToMessageId);
   const res = await fetch(`${TELEGRAM_API}/sendDocument`, { method: 'POST', body: form });
-  const data = await res.json();
-  return data.ok;
+  return res.json();
 }
 
 async function editMessageText(chatId, messageId, text) {
@@ -179,17 +179,23 @@ async function main() {
 
     const workDir = join(process.cwd(), 'manga_download');
     const mangaDir = join(workDir, 'chapters');
+    const bundleDir = join(workDir, 'bundles');
     if (!existsSync(mangaDir)) mkdirSync(mangaDir, { recursive: true });
+    if (!existsSync(bundleDir)) mkdirSync(bundleDir, { recursive: true });
 
     // Post manga title to Telegram
     let rootMessageId = null;
     if (telegramChatId && process.env.TELEGRAM_BOT_TOKEN) {
       const titleMsg = `<b>📚 ${escapeHtml(mangaTitle)}</b>\n` +
-                      `<i>Downloading ${validChapters.length} chapter(s)...</i>`;
+                      `<i>Downloading ${validChapters.length} chapter(s)...</i>\n` +
+                      `<i>Max bundle size: 50MB</i>`;
       rootMessageId = await sendText(telegramChatId, titleMsg);
     }
 
-    // Download and upload each chapter
+    // 📦 Bundle chapters together
+    const bundles = [];
+    let currentBundle = { chapters: [], size: 0 };
+    
     for (const [idx, chapter] of validChapters.entries()) {
       const chapNum = chapter._chapNum;
       const chapTitle = chapter.title ? ` - ${chapter.title}` : '';
@@ -206,7 +212,7 @@ async function main() {
       if (rootMessageId) {
         await editMessageText(telegramChatId, rootMessageId, 
           `<b>📚 ${escapeHtml(mangaTitle)}</b>\n` +
-          `<i>Chapter ${idx + 1}/${validChapters.length}...</i>`
+          `<i>Processing chapter ${idx + 1}/${validChapters.length}...</i>`
         );
       }
 
@@ -222,39 +228,114 @@ async function main() {
         }
         
         // Create ZIP for this chapter
-        const chapZipName = `${safeTitle} - Ch.${String(chapNum).padStart(4, '0')}${langTag}.zip`;
+        const chapZipName = `Ch.${String(chapNum).padStart(4, '0')}${langTag}.zip`;
         const chapZipPath = join(chapDir, '..', chapZipName);
         const zipSize = await createZip(chapDir, chapZipPath);
         
-        // Upload to Telegram
-        if (rootMessageId) {
-          const caption = `📖 Ch.${chapNum}${escapeHtml(chapTitle)}\n` +
-                         `🌐 ${langCode.toUpperCase()} | 📄 ${pages.length} | 💾 ${(zipSize/1024/1024).toFixed(1)} MB`;
-          await sendDocument(telegramChatId, chapZipPath, chapZipName, caption, rootMessageId);
-          
-          // ⏱️ 2 second delay between uploads
-          await new Promise(r => setTimeout(r, 2000));
+        console.log(`  ZIP size: ${(zipSize / 1024 / 1024).toFixed(2)} MB`);
+
+        // Check if adding this chapter exceeds 50MB
+        if (currentBundle.size + zipSize > TELEGRAM_FILE_LIMIT && currentBundle.chapters.length > 0) {
+          // Save current bundle and start new one
+          bundles.push({ ...currentBundle });
+          currentBundle = { chapters: [], size: 0 };
+          console.log(`  📦 Bundle complete (${currentBundle.chapters.length} chapters), starting new bundle`);
         }
 
-        // Clean up
+        // Add chapter to current bundle
+        currentBundle.chapters.push({
+          zipPath: chapZipPath,
+          chapNum: chapNum,
+          chapTitle: chapter.title,
+          langCode: langCode,
+          pages: pages.length,
+          size: zipSize
+        });
+        currentBundle.size += zipSize;
+
+        // Clean up chapter folder
         rmSync(chapDir, { recursive: true, force: true });
         
       } catch (chapErr) {
         console.error(`  Failed: ${chapErr.message}`);
       }
       
-      await new Promise(r => setTimeout(r, 1000));
+      await new Promise(r => setTimeout(r, 500));
+    }
+
+    // Don't forget the last bundle
+    if (currentBundle.chapters.length > 0) {
+      bundles.push(currentBundle);
+    }
+
+    console.log(`\n📦 Created ${bundles.length} bundle(s)`);
+
+    // 📤 Upload bundles to Telegram
+    for (const [bundleIdx, bundle] of bundles.entries()) {
+      const bundleStart = bundle.chapters[0].chapNum;
+      const bundleEnd = bundle.chapters[bundle.chapters.length - 1].chapNum;
+      const bundleZipName = `${safeTitle} - Ch.${String(bundleStart).padStart(4, '0')}-${String(bundleEnd).padStart(4, '0')}.zip`;
+      const bundleZipPath = join(bundleDir, bundleZipName);
+
+      console.log(`\n📤 Uploading bundle ${bundleIdx + 1}/${bundles.length} (Ch.${bundleStart}-${bundleEnd})`);
+
+      // Create combined ZIP for this bundle
+      const bundleArchive = archiver('zip', { zlib: { level: 9 } });
+      const bundleOutput = createWriteStream(bundleZipPath);
+      
+      bundleArchive.pipe(bundleOutput);
+      
+      for (const chap of bundle.chapters) {
+        const chapFileName = `Ch.${String(chap.chapNum).padStart(4, '0')}.zip`;
+        bundleArchive.file(chap.zipPath, { name: chapFileName });
+      }
+      
+      await new Promise((resolve, reject) => {
+        bundleOutput.on('close', resolve);
+        bundleArchive.on('error', reject);
+        bundleArchive.finalize();
+      });
+
+      const bundleSize = bundle.chapters.reduce((sum, c) => sum + c.size, 0);
+      console.log(`  Bundle size: ${(bundleSize / 1024 / 1024).toFixed(2)} MB`);
+
+      // Upload to Telegram
+      if (rootMessageId) {
+        const chapterList = bundle.chapters.map(c => `Ch.${c.chapNum}`).join(', ');
+        const caption = `📦 <b>Bundle ${bundleIdx + 1}/${bundles.length}</b>\n` +
+                       `📖 Chapters: ${chapterList}\n` +
+                       `📄 Total: ${bundle.chapters.reduce((sum, c) => sum + c.pages, 0)} pages\n` +
+                       `💾 ${(bundleSize / 1024 / 1024).toFixed(2)} MB`;
+        
+        const result = await sendDocument(telegramChatId, bundleZipPath, bundleZipName, caption, rootMessageId);
+        
+        if (result.ok) {
+          console.log(`  ✅ Uploaded successfully`);
+        } else {
+          console.error(`  ❌ Upload failed: ${result.description}`);
+        }
+
+        // ⏱️ 2 second delay between bundle uploads
+        if (bundleIdx < bundles.length - 1) {
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+
+      // Clean up bundle ZIP
+      rmSync(bundleZipPath, { force: true });
     }
 
     // Final update
     if (rootMessageId) {
       await editMessageText(telegramChatId, rootMessageId, 
         `<b>✅ ${escapeHtml(mangaTitle)}</b>\n` +
-        `<i>Complete! ${validChapters.length} chapter(s) uploaded</i>`
+        `<i>Complete!</i>\n` +
+        `📦 ${bundles.length} bundle(s)\n` +
+        `📖 ${validChapters.length} chapter(s) total`
       );
     }
 
-    console.log('Done!');
+    console.log('\n🎉 Done!');
     rmSync(workDir, { recursive: true, force: true });
     
   } catch (err) {
