@@ -7,10 +7,25 @@ on:
         description: 'MangaDex manga URL or UUID'
         required: true
         type: string
+        example: 'https://mangadex.org/title/123e4567-e89b-12d3-a456-426614174000'
+      
+      use_data_saver:
+        description: 'Use compressed images (smaller size, lower quality)'
+        required: false
+        type: boolean
+        default: false
+      
+      max_chapters:
+        description: 'Maximum chapters to download'
+        required: false
+        type: number
+        default: 10
 
 jobs:
   download:
     runs-on: ubuntu-latest
+    outputs:
+      zip_name: ${{ steps.download.outputs.zip_name }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -24,19 +39,27 @@ jobs:
         run: npm install
 
       - name: Download manga
+        id: download
         env:
           MANGA_INPUT: ${{ inputs.manga_link }}
+          USE_DATA_SAVER: ${{ inputs.use_data_saver }}
+          MAX_CHAPTERS: ${{ inputs.max_chapters }}
         run: npm run download
+
+      - name: Read zip name
+        id: zipname
+        run: echo "name=$(cat manga_download/zip_name.txt)" >> $GITHUB_OUTPUT
 
       - name: Upload zip artifact
         uses: actions/upload-artifact@v4
         with:
-          name: manga-archive
+          name: ${{ steps.zipname.outputs.name }}
           path: manga_download/*.zip
-          retention-days: 1
+          retention-days: 7
           if-no-files-found: error
 
       - name: Summary
         run: |
           echo "✅ Download complete!"
-          echo "📦 Check the 'Artifacts' section below to download your zip file."
+          echo "📦 Artifact: **${{ steps.zipname.outputs.name }}**"
+          echo "Download it from the 'Artifacts' section below."
