@@ -1,0 +1,16 @@
+{
+  "name": "mangadex-downloader",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "download": "node scripts/download.js"
+  },
+  "dependencies": {
+    "mangadex-full-api": "^6.2.0",
+    "archiver": "^6.0.1",
+    "node-fetch": "^3.3.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
