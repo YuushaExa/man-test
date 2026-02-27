@@ -1,10 +1,20 @@
 #!/usr/bin/env node
 import { Manga, Chapter } from 'mangadex-full-api';
 import fetch from 'node-fetch';
-import { createWriteStream, mkdirSync, existsSync, writeFileSync, readFileSync, unlinkSync } from 'fs';
+import { 
+  createWriteStream, 
+  mkdirSync, 
+  existsSync, 
+  writeFileSync, 
+  readFileSync,
+  readdirSync,
+  statSync,
+  cpSync,
+  rmSync
+} from 'fs';
 import { pipeline } from 'stream/promises';
 import archiver from 'archiver';
-import { join } from 'path';
+import { join, basename } from 'path';
 
 function extractUuid(input) {
   const match = input.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
@@ -48,6 +58,25 @@ async function createZip(sourceDir, outputPath) {
   });
 }
 
+// 🌟 Copy directory recursively (fixed version)
+function copyDir(src, dest) {
+  if (!existsSync(src)) return;
+  if (!existsSync(dest)) mkdirSync(dest, { recursive: true });
+  
+  const entries = readdirSync(src, { withFileTypes: true });
+  
+  for (const entry of entries) {
+    const srcPath = join(src, entry.name);
+    const destPath = join(dest, entry.name);
+    
+    if (entry.isDirectory()) {
+      copyDir(srcPath, destPath);
+    } else {
+      cpSync(srcPath, destPath);
+    }
+  }
+}
+
 function selectChapters(allChapters, maxChapters = 10) {
   const chapterMap = new Map();
   
@@ -84,7 +113,7 @@ function selectChapters(allChapters, maxChapters = 10) {
   return selected;
 }
 
-// 🌟 Smart chapter grouping - combine small chapters under 50MB
+// 🌟 Smart chapter grouping - combine small chapters under target MB
 function groupChapters(chapterList, maxSizeMB = 45) {
   const groups = [];
   let currentGroup = null;
@@ -93,7 +122,6 @@ function groupChapters(chapterList, maxSizeMB = 45) {
   for (const chapter of chapterList) {
     const chapterSizeMB = chapter.size / (1024 * 1024);
     
-    // Start new group if none exists
     if (!currentGroup) {
       currentGroup = {
         chapters: [chapter],
@@ -105,14 +133,12 @@ function groupChapters(chapterList, maxSizeMB = 45) {
       continue;
     }
     
-    // Check if we can add this chapter to current group
     if (currentSize + chapterSizeMB <= maxSizeMB) {
       currentGroup.chapters.push(chapter);
       currentGroup.totalSize += chapter.size;
       currentGroup.endChapter = chapter.chapterNum;
       currentSize += chapterSizeMB;
     } else {
-      // Save current group and start new one
       groups.push(currentGroup);
       currentGroup = {
         chapters: [chapter],
@@ -124,7 +150,6 @@ function groupChapters(chapterList, maxSizeMB = 45) {
     }
   }
   
-  // Don't forget the last group
   if (currentGroup) {
     groups.push(currentGroup);
   }
@@ -137,6 +162,7 @@ async function main() {
   const useDataSaver = process.env.USE_DATA_SAVER === 'true';
   const maxChapters = parseInt(process.env.MAX_CHAPTERS || '10', 10);
   const uploadArtwork = process.env.UPLOAD_ARTWORK === 'true';
+  const bundleSizeMB = parseInt(process.env.BUNDLE_SIZE_MB || '45', 10);
   
   if (!mangaInput) {
     console.error('❌ MANGA_INPUT not set');
@@ -169,6 +195,7 @@ async function main() {
     console.log(`📚 Manga: ${mangaTitle}`);
     console.log(`👤 Author: ${author}`);
     console.log(`📖 Max Chapters: ${maxChapters}`);
+    console.log(`📦 Bundle Size Target: ${bundleSizeMB} MB`);
 
     // Fetch chapters with pagination
     console.log('📖 Scanning chapters...');
@@ -201,9 +228,7 @@ async function main() {
 
     const workDir = join(process.cwd(), 'temp');
     const mangaDir = join(workDir, 'chapters');
-    const artDir = join(workDir, 'artwork');
     if (!existsSync(mangaDir)) mkdirSync(mangaDir, { recursive: true });
-    if (uploadArtwork && !existsSync(artDir)) mkdirSync(artDir, { recursive: true });
 
     const chapterList = [];
 
@@ -238,7 +263,8 @@ async function main() {
         size: chapSize,
         chapterNum: chapNum,
         title: chapTitle,
-        lang: chapter.translatedLanguage
+        lang: chapter.translatedLanguage,
+        chapDirName: sanitize(chapDirName) // Store for later copying
       });
       
       console.log(`   📦 Created: ${chapZipName} (${(chapSize / 1024 / 1024).toFixed(2)} MB)`);
@@ -246,9 +272,9 @@ async function main() {
       await new Promise(r => setTimeout(r, 800));
     }
 
-    // 🌟 Group chapters into bundles under 50MB
+    // 🌟 Group chapters into bundles under target MB
     console.log('📦 Grouping chapters into bundles...');
-    const chapterGroups = groupChapters(chapterList, 45); // 45MB to be safe
+    const chapterGroups = groupChapters(chapterList, bundleSizeMB);
     console.log(`✅ Created ${chapterGroups.length} chapter bundles`);
 
     // Create combined zips for groups
@@ -257,26 +283,14 @@ async function main() {
       const bundleDir = join(workDir, `bundle_${idx}`);
       if (!existsSync(bundleDir)) mkdirSync(bundleDir, { recursive: true });
       
-      // Copy all chapter folders to bundle
+      // 🌟 FIXED: Copy chapter folders to bundle using copyDir helper
       for (const ch of group.chapters) {
-        const chapNum = String(ch.chapterNum).padStart(4, '0');
-        const sourceDir = join(mangaDir, sanitize(`Ch.${chapNum}${ch.title}${ch.lang !== 'en' ? ` [${ch.lang}]` : ''}`));
-        const destDir = join(bundleDir, `Ch.${chapNum}`);
+        const sourceDir = join(mangaDir, ch.chapDirName);
+        const destDir = join(bundleDir, `Ch.${String(ch.chapterNum).padStart(4, '0')}`);
         
-        // Copy files manually
         if (existsSync(sourceDir)) {
-          const files = readFileSync(sourceDir);
-          const { readdirSync, cpSync } = await import('fs');
-          const { join } = await import('path');
-          
-          const items = readdirSync(sourceDir);
-          for (const item of items) {
-            const src = join(sourceDir, item);
-            const dst = join(destDir, item);
-            if (!existsSync(destDir)) mkdirSync(destDir, { recursive: true });
-            const { readFileSync, writeFileSync } = await import('fs');
-            writeFileSync(dst, readFileSync(src));
-          }
+          copyDir(sourceDir, destDir);
+          console.log(`   📁 Copied: ${ch.chapDirName}`);
         }
       }
       
@@ -301,16 +315,7 @@ async function main() {
       console.log(`   📦 Bundle: ${bundleZipName} (${(bundleSize / 1024 / 1024).toFixed(2)} MB, ${group.chapters.length} chapters)`);
       
       // Cleanup bundle dir
-      const { rmSync } = await import('fs');
       rmSync(bundleDir, { recursive: true, force: true });
-    }
-
-    // 🌟 Download artwork if enabled
-    const artworkFiles = [];
-    if (uploadArtwork && manga.links?.al || manga.links?.mal) {
-      console.log('🎨 Fetching artwork...');
-      // Note: MangaDex doesn't provide all artwork directly
-      // You can add custom artwork URLs here if available
     }
 
     // Download cover art
@@ -352,7 +357,6 @@ async function main() {
       bundles: bundleList,
       useDataSaver,
       uploadArtwork,
-      artworkFiles,
       downloadDate: new Date().toISOString()
     };
 
