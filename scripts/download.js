@@ -1,10 +1,71 @@
 #!/usr/bin/env node
 import { Manga, Chapter } from 'mangadex-full-api';
 import fetch from 'node-fetch';
-import { createWriteStream, mkdirSync, existsSync, writeFileSync } from 'fs';
+import { createWriteStream, mkdirSync, existsSync, writeFileSync, rmSync } from 'fs';
 import { pipeline } from 'stream/promises';
 import archiver from 'archiver';
-import { join } from 'path';
+import { join, basename } from 'path';
+import { FormData } from 'formdata-node';
+import { fileFromPath } from 'formdata-node/file-from-path';
+
+// 🌐 Telegram API helpers
+const TELEGRAM_API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
+
+async function sendText(chatId, text, replyToMessageId = null) {
+  if (!process.env.TELEGRAM_BOT_TOKEN) return null;
+  
+  const res = await fetch(`${TELEGRAM_API}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: chatId,
+      text,
+      reply_to_message_id: replyToMessageId,
+      parse_mode: 'HTML',
+      disable_web_page_preview: true
+    })
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(`Telegram API error: ${data.description}`);
+  return data.result.message_id;
+}
+
+async function sendDocument(chatId, filePath, fileName, caption = '', replyToMessageId = null) {
+  if (!process.env.TELEGRAM_BOT_TOKEN) return null;
+  
+  const form = new FormData();
+  form.append('chat_id', chatId);
+  
+  const file = await fileFromPath(filePath);
+  form.append('document', file, fileName);
+  
+  if (caption) form.append('caption', caption.substring(0, 1024)); // Telegram caption limit
+  if (replyToMessageId) form.append('reply_to_message_id', replyToMessageId);
+  
+  const res = await fetch(`${TELEGRAM_API}/sendDocument`, {
+    method: 'POST',
+    body: form
+  });
+  
+  const data = await res.json();
+  if (!data.ok) throw new Error(`Telegram API error: ${data.description}`);
+  return data.result.message_id;
+}
+
+async function editMessageText(chatId, messageId, text) {
+  if (!process.env.TELEGRAM_BOT_TOKEN) return null;
+  
+  await fetch(`${TELEGRAM_API}/editMessageText`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: chatId,
+      message_id: messageId,
+      text,
+      parse_mode: 'HTML'
+    })
+  });
+}
 
 // Extract UUID from URL or use as-is
 function extractUuid(input) {
@@ -12,9 +73,17 @@ function extractUuid(input) {
   return match ? match[1] : input.trim();
 }
 
-// Sanitize filename for zip
+// Sanitize filename for filesystem and ZIP
 function sanitize(str) {
-  return str.replace(/[\\/:*?"<>|]/g, '_').trim().substring(0, 100);
+  return str.replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim().substring(0, 100);
+}
+
+// Escape HTML for Telegram captions
+function escapeHtml(str) {
+  if (!str) return '';
+  return str.replace(/[<>&"']/g, c => ({
+    '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;'
+  }[c]));
 }
 
 // Parse chapter number (handles decimals like 2.5)
@@ -56,7 +125,6 @@ async function createZip(sourceDir, outputPath) {
 
 // 🌟 Smart chapter selection - avoids duplicates, prioritizes English
 function selectChapters(allChapters, maxChapters = 10) {
-  // Group chapters by chapter number
   const chapterMap = new Map();
   
   for (const ch of allChapters) {
@@ -73,7 +141,6 @@ function selectChapters(allChapters, maxChapters = 10) {
     
     const entry = chapterMap.get(chapNum);
     
-    // Priority: English > Other languages
     if (isEnglish) {
       entry.english = ch;
     } else if (!entry.other) {
@@ -81,7 +148,6 @@ function selectChapters(allChapters, maxChapters = 10) {
     }
   }
   
-  // Select chapters: prefer English, fallback to other
   const selected = [];
   const sortedKeys = Array.from(chapterMap.keys()).sort((a, b) => a - b);
   
@@ -106,7 +172,10 @@ function selectChapters(allChapters, maxChapters = 10) {
 async function main() {
   const mangaInput = process.env.MANGA_INPUT;
   const useDataSaver = process.env.USE_DATA_SAVER === 'true';
-  const maxChapters = parseInt(process.env.MAX_CHAPTERS || '1000', 1000);
+  const maxChapters = parseInt(process.env.MAX_CHAPTERS || '10', 10);
+  const telegramChatId = process.env.TELEGRAM_CHAT_ID;
+  const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
+  const useTelegram = !!(telegramChatId && telegramToken);
   
   if (!mangaInput) {
     console.error('❌ MANGA_INPUT environment variable not set');
@@ -117,6 +186,7 @@ async function main() {
   console.log(`🔍 Fetching manga: ${mangaId}`);
   console.log(`💾 Data Saver Mode: ${useDataSaver ? 'ON' : 'OFF'}`);
   console.log(`📖 Max Chapters: ${maxChapters}`);
+  console.log(`📤 Telegram Upload: ${useTelegram ? 'ENABLED' : 'DISABLED'}`);
 
   try {
     const manga = await Manga.get(mangaId);
@@ -124,13 +194,10 @@ async function main() {
     
     const mangaTitle = manga.localTitle || Object.values(manga.title)[0] || 'Unknown';
     const safeTitle = sanitize(mangaTitle);
-    const zipSuffix = useDataSaver ? ' (data-saver)' : '';
-    const zipName = `${safeTitle}${zipSuffix}.zip`;
     
     console.log(`📚 Manga: ${mangaTitle}`);
-    console.log(`📦 Output: ${zipName}`);
 
-    // 🌟 Fetch chapters with pagination (more efficient)
+    // 🌟 Fetch chapters with pagination
     console.log('📖 Scanning chapters (this may take a moment)...');
     const allChapters = [];
     let offset = 0;
@@ -149,19 +216,17 @@ async function main() {
       allChapters.push(...chapters);
       offset += limit;
       
-      // Stop if we have enough chapters to work with
       if (allChapters.length >= 300) {
         console.log(`⏹️  Stopped at ${allChapters.length} chapters (sufficient for selection)`);
         break;
       }
       
-      // Throttle to respect API limits
       await new Promise(r => setTimeout(r, 500));
     }
     
     console.log(`📊 Found ${allChapters.length} total chapters`);
 
-    // 🌟 Smart selection - avoid duplicates, prioritize English
+    // 🌟 Smart selection
     const validChapters = selectChapters(allChapters, maxChapters);
 
     if (validChapters.length === 0) {
@@ -171,7 +236,6 @@ async function main() {
     
     console.log(`✅ Selected ${validChapters.length} unique chapters`);
     
-    // Show language breakdown
     const englishCount = validChapters.filter(c => c._isEnglish).length;
     const otherCount = validChapters.length - englishCount;
     console.log(`   🇬🇧 English: ${englishCount} | 🌐 Other: ${otherCount}`);
@@ -180,47 +244,145 @@ async function main() {
     const mangaDir = join(workDir, 'chapters');
     if (!existsSync(mangaDir)) mkdirSync(mangaDir, { recursive: true });
 
+    // 📤 Telegram: Post manga title as main message
+    let rootMessageId = null;
+    if (useTelegram) {
+      try {
+        const titleMsg = `<b>📚 ${escapeHtml(mangaTitle)}</b>\n` +
+                        `<i>Starting download: ${validChapters.length} chapter(s) | ` +
+                        `Data Saver: ${useDataSaver ? '✅' : '❌'}</i>\n` +
+                        `<code>${mangaId}</code>`;
+        rootMessageId = await sendText(telegramChatId, titleMsg);
+        console.log('📤 Posted manga title to Telegram');
+      } catch (err) {
+        console.warn(`⚠️  Failed to post title to Telegram: ${err.message}`);
+        useTelegram = false; // Fallback to local-only
+      }
+    }
+
+    // 🔄 Process each chapter individually
     for (const [idx, chapter] of validChapters.entries()) {
       const chapNum = chapter._chapNum;
       const chapTitle = chapter.title ? ` - ${chapter.title}` : '';
-      const langTag = chapter._isEnglish ? '' : ` [${chapter.translatedLanguage}]`;
-      const chapDirName = `Ch.${String(chapNum).padStart(4, '0')}${chapTitle}${langTag}`.substring(0, 150);
+      const langCode = chapter.translatedLanguage;
+      const langTag = chapter._isEnglish ? '' : ` [${langCode}]`;
+      
+      const chapDirName = `Ch.${String(chapNum).padStart(4, '0')}${chapTitle}${langTag}`.substring(0, 120);
       const chapDir = join(mangaDir, sanitize(chapDirName));
       
       if (!existsSync(chapDir)) mkdirSync(chapDir, { recursive: true });
       console.log(`⬇️  Chapter ${idx + 1}/${validChapters.length}: ${chapDirName}`);
 
-      // Fetch full chapter data
-      const fullChapter = await Chapter.get(chapter.id);
-      
-      // 🌟 CORRECT: Use getReadablePages with useDataSaver option
-      const pages = await fullChapter.getReadablePages({ useDataSaver });
+      // Update Telegram progress
+      if (useTelegram && rootMessageId) {
+        try {
+          const progressText = `<b>📚 ${escapeHtml(mangaTitle)}</b>\n` +
+                              `<i>Downloading chapter ${idx + 1}/${validChapters.length}...</i>\n` +
+                              `<code>Ch.${chapNum}${escapeHtml(chapTitle || '')}</code>`;
+          await editMessageText(telegramChatId, rootMessageId, progressText);
+        } catch (e) {
+          // Ignore progress update errors
+        }
+      }
 
-      // Download each page
-      for (const [pageIdx, pageUrl] of pages.entries()) {
-        const ext = pageUrl.split('.').pop().split('?')[0] || 'jpg';
-        const filename = `${String(pageIdx + 1).padStart(3, '0')}.${ext}`;
-        const destPath = join(chapDir, filename);
-        await downloadImage(pageUrl, destPath);
+      try {
+        // Fetch full chapter data
+        const fullChapter = await Chapter.get(chapter.id);
+        
+        // Get page URLs
+        const pages = await fullChapter.getReadablePages({ useDataSaver });
+        console.log(`   📄 ${pages.length} pages found`);
+
+        // Download each page
+        for (const [pageIdx, pageUrl] of pages.entries()) {
+          const ext = pageUrl.split('.').pop().split('?')[0] || 'jpg';
+          const filename = `${String(pageIdx + 1).padStart(3, '0')}.${ext}`;
+          const destPath = join(chapDir, filename);
+          await downloadImage(pageUrl, destPath);
+        }
+        
+        // 🗜️ Create ZIP for THIS chapter only
+        const chapZipName = `${safeTitle} - Ch.${String(chapNum).padStart(4, '0')}${langTag}.zip`;
+        const chapZipPath = join(chapDir, '..', chapZipName);
+        const zipSize = await createZip(chapDir, chapZipPath);
+        console.log(`   🗜️  Chapter ZIP: ${(zipSize / 1024 / 1024).toFixed(2)} MB`);
+
+        // 📤 Upload to Telegram as reply to manga title
+        if (useTelegram && rootMessageId) {
+          try {
+            const langDisplay = langCode.toUpperCase();
+            const caption = `📖 <b>Ch.${chapNum}</b>${escapeHtml(chapTitle ? ` - ${chapter.title}` : '')}\n` +
+                           `🌐 ${langDisplay} | 📄 ${pages.length} pages | 💾 ${(zipSize/1024/1024).toFixed(1)} MB`;
+            
+            await sendDocument(
+              telegramChatId,
+              chapZipPath,
+              chapZipName,
+              caption,
+              rootMessageId // 👈 Replies to the manga title message
+            );
+            console.log(`   ✅ Uploaded to Telegram`);
+          } catch (uploadErr) {
+            console.warn(`   ⚠️  Telegram upload failed: ${uploadErr.message}`);
+          }
+        }
+
+        // 🧹 Clean up chapter folder to save disk space
+        rmSync(chapDir, { recursive: true, force: true });
+        console.log(`   🧹 Cleaned up temporary files`);
+        
+      } catch (chapErr) {
+        console.error(`   ❌ Failed to process chapter: ${chapErr.message}`);
+        // Continue with next chapter instead of failing entirely
       }
       
-      // Throttle between chapters to respect API limits
-      await new Promise(r => setTimeout(r, 800));
+      // Throttle between chapters
+      await new Promise(r => setTimeout(r, 1000));
     }
 
-    const zipPath = join(workDir, zipName);
-    console.log(`🗜️  Creating archive: ${zipName}`);
-    const size = await createZip(mangaDir, zipPath);
-    console.log(`✅ Archive created: ${(size / 1024 / 1024).toFixed(2)} MB`);
+    // 📤 Final Telegram update
+    if (useTelegram && rootMessageId) {
+      try {
+        const finalText = `<b>✅ ${escapeHtml(mangaTitle)}</b>\n` +
+                         `<i>Download complete!</i>\n` +
+                         `📦 ${validChapters.length} chapter(s) uploaded\n` +
+                         `💾 Data Saver: ${useDataSaver ? 'ON' : 'OFF'}\n` +
+                         `<code>${mangaId}</code>`;
+        await editMessageText(telegramChatId, rootMessageId, finalText);
+        console.log('📤 Final update posted to Telegram');
+      } catch (e) {
+        console.warn(`⚠️  Failed to post final update: ${e.message}`);
+      }
+    }
+
+    console.log(`\n🎉 All done!`);
+    console.log(`📁 Local output: ${mangaDir}`);
+    if (useTelegram) {
+      console.log(`📤 Telegram: Check your channel for uploaded chapters`);
+    }
     
-    // Output for GitHub Actions
-    console.log(`::set-output name=zip_name::${zipName}`);
-    console.log(`::set-output name=zip_path::${zipPath}`);
-    writeFileSync(join(workDir, 'zip_name.txt'), zipName);
+    // GitHub Actions compatibility (optional)
+    console.log(`::set-output name=chapters_downloaded::${validChapters.length}`);
+    writeFileSync(join(workDir, 'summary.txt'), 
+      `Manga: ${mangaTitle}\nChapters: ${validChapters.length}\nCompleted: ${new Date().toISOString()}`);
     
   } catch (err) {
-    console.error(`❌ Error: ${err.message}`);
+    console.error(`❌ Fatal Error: ${err.message}`);
     console.error(err.stack);
+    
+    // Notify Telegram of failure
+    if (useTelegram && telegramChatId) {
+      try {
+        await sendText(telegramChatId, 
+          `<b>❌ Download Failed</b>\n` +
+          `<code>${escapeHtml(err.message)}</code>`,
+          null
+        );
+      } catch (e) {
+        // Ignore notification errors
+      }
+    }
+    
     process.exit(1);
   }
 }
