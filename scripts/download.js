@@ -140,7 +140,7 @@ async function main() {
       const chapters = await manga.getFeed({
         limit,
         offset,
-        translatedLanguage: ['en', 'id', 'pt-br', 'ru', 'th', 'vi', 'ko', 'zh', 'zh-ro', 'pl', 'jp'],
+        translatedLanguage: ['en', 'ru', 'pl', 'id', 'pt-br', 'th', 'vi', 'ko', 'zh', 'zh-ro', 'jp'],
         order: { chapter: 'asc' }
       });
       
