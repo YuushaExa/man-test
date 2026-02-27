@@ -1,101 +1,235 @@
-name: Download Manga from MangaDex
+name: 📚 MangaDex Downloader → Telegram
 
 on:
   workflow_dispatch:
     inputs:
       manga_link:
-        description: 'MangaDex manga URL or UUID'
+        description: '🔗 MangaDex manga URL or UUID'
         required: true
         type: string
         example: 'https://mangadex.org/title/123e4567-e89b-12d3-a456-426614174000'
       
       use_data_saver:
-        description: 'Use compressed images (smaller size, lower quality)'
+        description: '🗜️ Use compressed images (smaller size, lower quality)'
         required: false
         type: boolean
         default: false
       
       max_chapters:
-        description: 'Maximum chapters to download'
+        description: '📖 Maximum chapters to download (1-100)'
         required: false
         type: number
         default: 10
+        minimum: 1
+        maximum: 1000
+      
+      upload_to_telegram:
+        description: '📤 Upload chapters to Telegram channel'
+        required: false
+        type: boolean
+        default: true
+      
+      upload_to_github:
+        description: '💾 Also save ZIPs to GitHub repository'
+        required: false
+        type: boolean
+        default: false
       
       target_branch:
-        description: 'Branch to push results to (default: current branch)'
+        description: '🌿 Branch to push results to (if GitHub upload enabled)'
         required: false
         type: string
-        default: ''
+        default: 'main'
+
+  # Optional: Schedule automatic downloads (uncomment to enable)
+  # schedule:
+  #   - cron: '0 12 * * 0'  # Every Sunday at 12:00 UTC
 
 jobs:
-  download:
+  download-and-upload:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
-      contents: write  # 🔐 Required to push commits
+      contents: write  # Required only if upload_to_github = true
+    
     steps:
-      - name: Checkout repository
+      # 🛡️ Validate inputs early
+      - name: Validate configuration
+        run: |
+          if [[ "${{ inputs.upload_to_telegram }}" == "false" && "${{ inputs.upload_to_github }}" == "false" ]]; then
+            echo "❌ Error: At least one upload destination must be enabled"
+            exit 1
+          fi
+          if [[ "${{ inputs.upload_to_telegram }}" == "true" && -z "${{ secrets.TELEGRAM_BOT_TOKEN }}" ]]; then
+            echo "❌ Error: TELEGRAM_BOT_TOKEN secret is required for Telegram upload"
+            exit 1
+          fi
+
+      # 📦 Checkout repository
+      - name: 📦 Checkout code
         uses: actions/checkout@v4
         with:
-          persist-credentials: true  # Keep GITHUB_TOKEN for pushing
-          fetch-depth: 0  # Fetch all history for proper commits
+          persist-credentials: ${{ inputs.upload_to_github }}
+          fetch-depth: 0
 
-      - name: Setup Node.js
+      # 🟢 Setup Node.js environment
+      - name: 🟢 Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm'
 
-      - name: Install dependencies
-        run: npm install
+      # 📥 Install dependencies
+      - name: 📥 Install dependencies
+        run: npm ci --ignore-scripts
 
-      - name: Download manga
+      # 🗂️ Prepare working directory
+      - name: 🗂️ Prepare directories
+        run: |
+          mkdir -p manga_download/chapters
+          mkdir -p result
+
+      # 🔄 Download manga with Telegram integration
+      - name: 🔄 Download manga
         id: download
         env:
+          # MangaDex configuration
           MANGA_INPUT: ${{ inputs.manga_link }}
           USE_DATA_SAVER: ${{ inputs.use_data_saver }}
           MAX_CHAPTERS: ${{ inputs.max_chapters }}
-        run: npm run download
-
-      - name: Read zip name
-        id: zipname
-        run: echo "name=$(cat manga_download/zip_name.txt)" >> $GITHUB_OUTPUT
-
-      - name: Prepare result folder
+          
+          # Telegram configuration (only if enabled)
+          TELEGRAM_BOT_TOKEN: ${{ inputs.upload_to_telegram && secrets.TELEGRAM_BOT_TOKEN || '' }}
+          TELEGRAM_CHAT_ID: ${{ inputs.upload_to_telegram && secrets.TELEGRAM_CHAT_ID || '' }}
+          
+          # GitHub configuration (only if enabled)
+          GITHUB_UPLOAD: ${{ inputs.upload_to_github }}
+          GITHUB_TOKEN: ${{ inputs.upload_to_github && secrets.GITHUB_TOKEN || '' }}
         run: |
-          mkdir -p result
-          # Move zip to result folder
-          mv manga_download/*.zip result/
-          # Clean up temporary files
-          rm -rf manga_download
+          echo "🚀 Starting manga download..."
+          echo "🔗 Source: ${{ inputs.manga_link }}"
+          echo "🗜️ Data Saver: ${{ inputs.use_data_saver }}"
+          echo "📖 Max Chapters: ${{ inputs.max_chapters }}"
+          echo "📤 Telegram: ${{ inputs.upload_to_telegram }}"
+          echo "💾 GitHub: ${{ inputs.upload_to_github }}"
+          echo ""
+          
+          npm run download
+          
+          # Capture output for summary
+          if [[ -f manga_download/summary.txt ]]; then
+            echo "summary<<EOF" >> $GITHUB_OUTPUT
+            cat manga_download/summary.txt >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          fi
 
-      - name: Commit and push results
+      # 📤 Upload to GitHub (if enabled)
+      - name: 📤 Upload to GitHub repository
+        if: inputs.upload_to_github == true
         env:
-          ZIP_NAME: ${{ steps.zipname.outputs.name }}
-          TARGET_BRANCH: ${{ inputs.target_branch }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_BRANCH: ${{ inputs.target_branch }}
         run: |
+          echo "💾 Preparing GitHub upload..."
+          
           # Configure git
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
-          # Determine target branch
-          BRANCH="${TARGET_BRANCH:-$(git branch --show-current)}"
-          echo "📦 Pushing to branch: $BRANCH"
+          # Move any remaining ZIPs to result folder
+          find manga_download -name "*.zip" -exec mv {} result/ \; 2>/dev/null || true
+          
+          # Skip if nothing to upload
+          if [[ ! -n "$(ls -A result 2>/dev/null)" ]]; then
+            echo "⚠️ No files to upload to GitHub"
+            exit 0
+          fi
           
           # Add, commit, and push
           git add result/
-          git commit -m "📚 Add manga: $ZIP_NAME
-
-          Downloaded via GitHub Actions
+          git commit -m "📚 Download: $(basename result/*.zip 2>/dev/null | head -1)
+          
           - Source: ${{ inputs.manga_link }}
-          - Data Saver: ${{ inputs.use_data_saver }}
           - Chapters: ${{ inputs.max_chapters }}
+          - Data Saver: ${{ inputs.use_data_saver }}
+          - Generated: $(date -u +"%Y-%m-%d %H:%M UTC")
           
           [skip ci]" || echo "⚠️ No changes to commit"
           
-          git push origin "$BRANCH"
+          git push origin "${TARGET_BRANCH}"
+          
+          echo "✅ Uploaded to GitHub: ${TARGET_BRANCH}/result"
 
-      - name: Summary
+      # 📊 Generate run summary
+      - name: 📊 Generate summary
         run: |
-          echo "✅ Download and upload complete!"
-          echo "📦 File: **result/${{ steps.zipname.outputs.name }}**"
-          echo "🔗 View in repo: \`$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/tree/$(git branch --show-current)/result\`"
+          {
+            echo "## 🎉 Download Complete"
+            echo ""
+            echo "### 📚 Manga Info"
+            echo "- **Source**: ${{ inputs.manga_link }}"
+            echo "- **Chapters**: ${{ inputs.max_chapters }} (max)"
+            echo "- **Data Saver**: ${{ inputs.use_data_saver && '✅ Yes' || '❌ No' }}"
+            echo ""
+            echo "### 📤 Upload Status"
+            echo "- **Telegram**: ${{ inputs.upload_to_telegram && '✅ Sent' || '⏭️ Skipped' }}"
+            echo "- **GitHub**: ${{ inputs.upload_to_github && '✅ Pushed' || '⏭️ Skipped' }}"
+            echo ""
+            
+            # Show downloaded files if any exist locally
+            if [[ -d result && -n "$(ls -A result 2>/dev/null)" ]]; then
+              echo "### 📦 Generated Files"
+              echo '```'
+              ls -lh result/*.zip 2>/dev/null | awk '{print "- "$9" ("$5")"}' || echo "- No files found"
+              echo '```'
+            fi
+            echo ""
+            echo "### 🔗 Quick Links"
+            if [[ "${{ inputs.upload_to_github }}" == "true" ]]; then
+              echo "- [📁 View in Repository](${{ github.server_url }}/${{ github.repository }}/tree/${{ inputs.target_branch }}/result)"
+            fi
+            if [[ "${{ inputs.upload_to_telegram }}" == "true" ]]; then
+              echo "- [💬 Check Telegram Channel](https://t.me/c/$(echo ${{ secrets.TELEGRAM_CHAT_ID }} | sed 's/-100//')/)"
+            fi
+          } >> $GITHUB_STEP_SUMMARY
+
+      # 🧹 Cleanup workspace
+      - name: 🧹 Cleanup
+        if: always()
+        run: |
+          echo "🧹 Cleaning up workspace..."
+          rm -rf manga_download node_modules
+          echo "✅ Cleanup complete"
+
+      # ❌ Error notification (if download failed)
+      - name: ❌ Notify on failure
+        if: failure() && inputs.upload_to_telegram == true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [[ -n "$TELEGRAM_BOT_TOKEN" && -n "$TELEGRAM_CHAT_ID" ]]; then
+            curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"chat_id\": \"$TELEGRAM_CHAT_ID\",
+                \"text\": \"❌ <b>Download Failed</b>\\n\\n<b>Workflow</b>: ${{ github.workflow }}\\n<b>Run</b>: ${{ github.run_number }}\\n<b>Manga</b>: <code>${{ inputs.manga_link }}</code>\\n\\n[View Logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})\",
+                \"parse_mode\": \"HTML\"
+              }" || true
+          fi
+
+  # 🔄 Optional: Auto-delete old workflow runs to save space
+  cleanup-old-runs:
+    needs: download-and-upload
+    runs-on: ubuntu-latest
+    if: always() && github.event_name == 'schedule'
+    permissions:
+      actions: write
+    steps:
+      - name: 🗑️ Delete old workflow runs
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          retain_days: 7
+          keep_minimum_runs: 3
