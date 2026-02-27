@@ -106,7 +106,7 @@ function selectChapters(allChapters, maxChapters = 10) {
 async function main() {
   const mangaInput = process.env.MANGA_INPUT;
   const useDataSaver = process.env.USE_DATA_SAVER === 'true';
-  const maxChapters = parseInt(process.env.MAX_CHAPTERS || '10', 10);
+  const maxChapters = parseInt(process.env.MAX_CHAPTERS || '1000', 1000);
   
   if (!mangaInput) {
     console.error('❌ MANGA_INPUT environment variable not set');
@@ -140,7 +140,7 @@ async function main() {
       const chapters = await manga.getFeed({
         limit,
         offset,
-        translatedLanguage: ['en', 'id', 'pt-br', 'ru', 'th', 'vi', 'ko', 'zh', 'zh-ro', 'jp'],
+        translatedLanguage: ['en', 'id', 'pt-br', 'ru', 'th', 'vi', 'ko', 'zh', 'zh-ro', 'pl', 'jp'],
         order: { chapter: 'asc' }
       });
       
