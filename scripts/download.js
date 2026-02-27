@@ -140,7 +140,7 @@ async function main() {
       const chapters = await manga.getFeed({
         limit,
         offset,
-        translatedLanguage: ['en', 'ja', 'es', 'ru'], // Priority languages
+        translatedLanguage: ['en', 'ja', 'ko', 'zh'], // Priority languages
         order: { chapter: 'asc' }
       });
       
@@ -190,9 +190,13 @@ async function main() {
       if (!existsSync(chapDir)) mkdirSync(chapDir, { recursive: true });
       console.log(`⬇️  Chapter ${idx + 1}/${validChapters.length}: ${chapDirName}`);
 
+      // Fetch full chapter data
       const fullChapter = await Chapter.get(chapter.id);
-      const pages = await fullChapter.getPages({ dataSaver: useDataSaver });
+      
+      // 🌟 CORRECT: Use getReadablePages with useDataSaver option
+      const pages = await fullChapter.getReadablePages({ useDataSaver });
 
+      // Download each page
       for (const [pageIdx, pageUrl] of pages.entries()) {
         const ext = pageUrl.split('.').pop().split('?')[0] || 'jpg';
         const filename = `${String(pageIdx + 1).padStart(3, '0')}.${ext}`;
@@ -200,7 +204,7 @@ async function main() {
         await downloadImage(pageUrl, destPath);
       }
       
-      // Throttle to respect API limits
+      // Throttle between chapters to respect API limits
       await new Promise(r => setTimeout(r, 800));
     }
 
