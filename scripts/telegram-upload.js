@@ -24,7 +24,12 @@ async function telegramRequest(endpoint, data, isFile = false) {
   if (isFile) {
     const form = new FormData();
     for (const [key, value] of Object.entries(data)) {
-      form.append(key, value);
+      // Handle Buffer or Stream for file uploads
+      if (Buffer.isBuffer(value) || typeof value.pipe === 'function') {
+        form.append(key, value, { filename: 'file' });
+      } else {
+        form.append(key, value);
+      }
     }
     body = form;
     headers = form.getHeaders();
@@ -62,29 +67,32 @@ async function sendMetadata(metadata) {
     photoBuffer = readFileSync(coverArtPath);
   }
   
-  const chapterRange = metadata.bundles.length > 0 
-    ? `Ch.${String(metadata.bundles[0].startChapter).padStart(4, '0')}-${String(metadata.bundles[metadata.bundles.length - 1].endChapter).padStart(4, '0')}`
+  const firstBundle = metadata.bundles?.[0];
+  const lastBundle = metadata.bundles?.[metadata.bundles?.length - 1];
+  
+  const chapterRange = firstBundle && lastBundle
+    ? `Ch.${String(firstBundle.startChapter).padStart(4, '0')}-${String(lastBundle.endChapter).padStart(4, '0')}`
     : 'N/A';
   
   const caption = `📚 *${metadata.title}*
 
-👤 **Author:** ${metadata.author}
-🎨 **Artist:** ${metadata.artist}
-📅 **Year:** ${metadata.year}
-📊 **Status:** ${metadata.status}
-🌐 **Language:** ${metadata.originalLanguage}
-⚠️ **Rating:** ${metadata.contentRating}
+👤 **Author:** ${metadata.author || 'Unknown'}
+🎨 **Artist:** ${metadata.artist || 'Unknown'}
+📅 **Year:** ${metadata.year || 'Unknown'}
+📊 **Status:** ${metadata.status || 'Unknown'}
+🌐 **Language:** ${metadata.originalLanguage || 'Unknown'}
+⚠️ **Rating:** ${metadata.contentRating || 'Unknown'}
 
-📖 **Chapters:** ${chapterRange} (${metadata.chapterCount} chapters → ${metadata.bundleCount} bundles)
+📖 **Chapters:** ${chapterRange} (${metadata.chapterCount || 0} chapters → ${metadata.bundleCount || 0} bundles)
 💾 **Quality:** ${metadata.useDataSaver ? 'Data Saver' : 'Original'}
-📥 **Downloaded:** ${new Date(metadata.downloadDate).toLocaleDateString()}
+📥 **Downloaded:** ${new Date(metadata.downloadDate || Date.now()).toLocaleDateString()}
 
-🏷️ **Genres:** ${metadata.genres}
-🎭 **Themes:** ${metadata.themes}
-🏷️ **Tags:** ${metadata.tags}
+🏷️ **Genres:** ${metadata.genres || 'None'}
+🎭 **Themes:** ${metadata.themes || 'None'}
+🏷️ **Tags:** ${metadata.tags || 'None'}
 
 📝 **Description:**
-${metadata.description}
+${metadata.description?.substring(0, 4000) || 'No description available'}
 
 ─────────────────
 _Chapter bundles will be uploaded as replies below_`;
@@ -155,7 +163,8 @@ async function sendSplitBundle(zipPath, zipName, parentId) {
 }
 
 async function sendArtwork(artworkFiles, parentId) {
-  if (!artworkFiles || artworkFiles.length === 0) {
+  // 🌟 Safe check for undefined/null artworkFiles
+  if (!artworkFiles || !Array.isArray(artworkFiles) || artworkFiles.length === 0) {
     console.log('🎨 No artwork to upload');
     return;
   }
@@ -163,7 +172,7 @@ async function sendArtwork(artworkFiles, parentId) {
   console.log(`🎨 Uploading ${artworkFiles.length} artwork images...`);
   
   for (const [idx, artPath] of artworkFiles.entries()) {
-    if (!existsSync(artPath)) continue;
+    if (!artPath || !existsSync(artPath)) continue;
     
     const fileBuffer = readFileSync(artPath);
     const form = new FormData();
@@ -190,20 +199,26 @@ async function main() {
   
   const metadata = JSON.parse(readFileSync(metadataPath, 'utf-8'));
   console.log(`📚 Uploading: ${metadata.title}`);
-  console.log(`📦 Bundles: ${metadata.bundleCount}`);
+  console.log(`📦 Bundles: ${metadata.bundleCount || 0}`);
   
   try {
     // Step 1: Send metadata with cover art
     const parentId = await sendMetadata(metadata);
     
-    // Step 2: Send artwork if enabled
-    if (metadata.uploadArtwork && metadata.artworkFiles.length > 0) {
+    // Step 2: Send artwork if enabled (🌟 safe null check)
+    if (metadata.uploadArtwork && metadata.artworkFiles?.length > 0) {
       await sendArtwork(metadata.artworkFiles, parentId);
     }
     
-    // Step 3: Send each bundle
-    for (const [idx, bundle] of metadata.bundles.entries()) {
-      console.log(`⬆️  Bundle ${idx + 1}/${metadata.bundleCount}: ${bundle.zipName}`);
+    // Step 3: Send each bundle (🌟 safe iteration)
+    const bundles = metadata.bundles || [];
+    for (const [idx, bundle] of bundles.entries()) {
+      console.log(`⬆️  Bundle ${idx + 1}/${bundles.length}: ${bundle.zipName}`);
+      
+      if (!bundle.zipPath || !existsSync(bundle.zipPath)) {
+        console.warn(`   ⚠️  Bundle file not found: ${bundle.zipPath}`);
+        continue;
+      }
       
       const fileSize = bundle.size;
       
@@ -220,7 +235,7 @@ async function main() {
     console.log('✅ All uploads complete!');
     
     // Cleanup
-    unlinkSync(metadataPath);
+    if (existsSync(metadataPath)) unlinkSync(metadataPath);
     if (metadata.coverArtPath && existsSync(metadata.coverArtPath)) {
       unlinkSync(metadata.coverArtPath);
     }
