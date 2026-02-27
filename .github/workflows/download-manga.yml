@@ -20,15 +20,24 @@ on:
         required: false
         type: number
         default: 10
+      
+      target_branch:
+        description: 'Branch to push results to (default: current branch)'
+        required: false
+        type: string
+        default: ''
 
 jobs:
   download:
     runs-on: ubuntu-latest
-    outputs:
-      zip_name: ${{ steps.download.outputs.zip_name }}
+    permissions:
+      contents: write  # 🔐 Required to push commits
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: true  # Keep GITHUB_TOKEN for pushing
+          fetch-depth: 0  # Fetch all history for proper commits
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -50,16 +59,43 @@ jobs:
         id: zipname
         run: echo "name=$(cat manga_download/zip_name.txt)" >> $GITHUB_OUTPUT
 
-      - name: Upload zip artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.zipname.outputs.name }}
-          path: manga_download/*.zip
-          retention-days: 7
-          if-no-files-found: error
+      - name: Prepare result folder
+        run: |
+          mkdir -p result
+          # Move zip to result folder
+          mv manga_download/*.zip result/
+          # Clean up temporary files
+          rm -rf manga_download
+
+      - name: Commit and push results
+        env:
+          ZIP_NAME: ${{ steps.zipname.outputs.name }}
+          TARGET_BRANCH: ${{ inputs.target_branch }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Configure git
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Determine target branch
+          BRANCH="${TARGET_BRANCH:-$(git branch --show-current)}"
+          echo "📦 Pushing to branch: $BRANCH"
+          
+          # Add, commit, and push
+          git add result/
+          git commit -m "📚 Add manga: $ZIP_NAME
+
+          Downloaded via GitHub Actions
+          - Source: ${{ inputs.manga_link }}
+          - Data Saver: ${{ inputs.use_data_saver }}
+          - Chapters: ${{ inputs.max_chapters }}
+          
+          [skip ci]" || echo "⚠️ No changes to commit"
+          
+          git push origin "$BRANCH"
 
       - name: Summary
         run: |
-          echo "✅ Download complete!"
-          echo "📦 Artifact: **${{ steps.zipname.outputs.name }}**"
-          echo "Download it from the 'Artifacts' section below."
+          echo "✅ Download and upload complete!"
+          echo "📦 File: **result/${{ steps.zipname.outputs.name }}**"
+          echo "🔗 View in repo: \`$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/tree/$(git branch --show-current)/result\`"
