@@ -11,12 +11,12 @@ on:
         description: 'Use compressed images'
         required: false
         type: boolean
-        default: true
+        default: false
       max_chapters:
         description: 'Max chapters (1-100)'
         required: false
         type: number
-        default: 100
+        default: 10
 
 jobs:
   download:
@@ -30,7 +30,7 @@ jobs:
           node-version: '20'
 
       - run: npm install
-
+      
       - name: Download and upload to Telegram
         env:
           MANGA_INPUT: ${{ inputs.manga_link }}
