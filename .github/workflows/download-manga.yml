@@ -1,101 +1,108 @@
-name: Download Manga from MangaDex
+name: Download Manga & Upload to Telegram
 
 on:
   workflow_dispatch:
     inputs:
       manga_link:
-        description: 'MangaDex manga URL or UUID'
+        description: 'MangaDex manga URL or UUID (e.g., https://mangadex.org/title/xxx or just UUID)'
         required: true
         type: string
-        example: 'https://mangadex.org/title/123e4567-e89b-12d3-a456-426614174000'
+        placeholder: 'https://mangadex.org/title/123e4567-e89b-12d3-a456-426614174000'
       
       use_data_saver:
-        description: 'Use compressed images (smaller size, lower quality)'
+        description: 'Use compressed images (smaller file size, lower quality)'
         required: false
         type: boolean
-        default: false
+        default: true
       
       max_chapters:
-        description: 'Maximum chapters to download'
+        description: 'Maximum number of chapters to download'
         required: false
         type: number
         default: 10
       
-      target_branch:
-        description: 'Branch to push results to (default: current branch)'
+      upload_artwork:
+        description: 'Upload additional artwork images (if available)'
         required: false
-        type: string
-        default: ''
+        type: boolean
+        default: false
+      
+      bundle_size_mb:
+        description: 'Maximum bundle size in MB (chapters will be combined to stay under this)'
+        required: false
+        type: number
+        default: 49
 
 jobs:
-  download:
+  download-and-upload:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write  # 🔐 Required to push commits
+    timeout-minutes: 60
     steps:
-      - name: Checkout repository
+      - name: 📥 Checkout repository
         uses: actions/checkout@v4
-        with:
-          persist-credentials: true  # Keep GITHUB_TOKEN for pushing
-          fetch-depth: 0  # Fetch all history for proper commits
 
-      - name: Setup Node.js
+      - name: 🟢 Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm'
 
-      - name: Install dependencies
+      - name: 📦 Install dependencies
         run: npm install
 
-      - name: Download manga
+      - name: 📚 Download manga chapters
         id: download
         env:
           MANGA_INPUT: ${{ inputs.manga_link }}
           USE_DATA_SAVER: ${{ inputs.use_data_saver }}
           MAX_CHAPTERS: ${{ inputs.max_chapters }}
+          UPLOAD_ARTWORK: ${{ inputs.upload_artwork }}
+          BUNDLE_SIZE_MB: ${{ inputs.bundle_size_mb }}
         run: npm run download
 
-      - name: Read zip name
-        id: zipname
-        run: echo "name=$(cat manga_download/zip_name.txt)" >> $GITHUB_OUTPUT
-
-      - name: Prepare result folder
-        run: |
-          mkdir -p result
-          # Move zip to result folder
-          mv manga_download/*.zip result/
-          # Clean up temporary files
-          rm -rf manga_download
-
-      - name: Commit and push results
+      - name: 📤 Upload to Telegram
+        id: upload
         env:
-          ZIP_NAME: ${{ steps.zipname.outputs.name }}
-          TARGET_BRANCH: ${{ inputs.target_branch }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Configure git
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # Determine target branch
-          BRANCH="${TARGET_BRANCH:-$(git branch --show-current)}"
-          echo "📦 Pushing to branch: $BRANCH"
-          
-          # Add, commit, and push
-          git add result/
-          git commit -m "📚 Add manga: $ZIP_NAME
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: npm run upload
 
-          Downloaded via GitHub Actions
-          - Source: ${{ inputs.manga_link }}
-          - Data Saver: ${{ inputs.use_data_saver }}
-          - Chapters: ${{ inputs.max_chapters }}
-          
-          [skip ci]" || echo "⚠️ No changes to commit"
-          
-          git push origin "$BRANCH"
-
-      - name: Summary
+      - name: 🧹 Cleanup temporary files
+        if: always()
         run: |
-          echo "✅ Download and upload complete!"
-          echo "📦 File: **result/${{ steps.zipname.outputs.name }}**"
-          echo "🔗 View in repo: \`$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/tree/$(git branch --show-current)/result\`"
+          echo "Cleaning up temporary files..."
+          rm -rf temp/
+          rm -rf node_modules/
+          echo "✅ Cleanup complete"
+
+      - name: 📊 Upload summary
+        run: |
+          echo "## ✅ Manga Download & Upload Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Manga:** ${{ inputs.manga_link }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Data Saver:** ${{ inputs.use_data_saver }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Max Chapters:** ${{ inputs.max_chapters }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Bundle Size:** ${{ inputs.bundle_size_mb }} MB" >> $GITHUB_STEP_SUMMARY
+          echo "**Upload Artwork:** ${{ inputs.upload_artwork }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📱 Check your Telegram channel/chat for the uploaded manga!" >> $GITHUB_STEP_SUMMARY
+
+      - name: ⚠️ Error notification (on failure)
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              -d chat_id="${TELEGRAM_CHAT_ID}" \
+              -d text="❌ **Manga Download Failed**
+
+              **Manga:** ${{ inputs.manga_link }}
+              **Time:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+              **Workflow:** ${{ github.workflow }}
+              **Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+              Check the workflow logs for details." \
+              -d parse_mode="Markdown" || true
+          fi
