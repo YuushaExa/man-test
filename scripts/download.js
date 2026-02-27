@@ -27,29 +27,70 @@ async function sendText(chatId, text, replyToMessageId = null) {
   return data.ok ? data.result.message_id : null;
 }
 
-async function sendDocument(chatId, filePath, fileName, caption = '', replyToMessageId = null) {
+async function sendDocument(chatId, filePath, fileName, caption = '', replyToMessageId = null, maxRetries = 5) {
   if (!process.env.TELEGRAM_BOT_TOKEN) return null;
-  const form = new FormData();
-  form.append('chat_id', chatId);
-  form.append('document', await fileFromPath(filePath), fileName);
-  if (caption) form.append('caption', caption.substring(0, 1024));
-  if (replyToMessageId) form.append('reply_to_message_id', replyToMessageId);
-  const res = await fetch(`${TELEGRAM_API}/sendDocument`, { method: 'POST', body: form });
-  return res.json();
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const form = new FormData();
+      form.append('chat_id', chatId);
+      form.append('document', await fileFromPath(filePath), fileName);
+      if (caption) form.append('caption', caption.substring(0, 1024));
+      if (replyToMessageId) form.append('reply_to_message_id', replyToMessageId);
+      
+      const res = await fetch(`${TELEGRAM_API}/sendDocument`, { method: 'POST', body: form });
+      const data = await res.json();
+      
+      if (data.ok) {
+        return data;
+      }
+      
+      // Handle rate limiting
+      if (data.description && data.description.includes('Too Many Requests')) {
+        const retryAfter = data.description.match(/retry after (\d+)/)?.[1] || 5;
+        const waitTime = Math.min(parseInt(retryAfter) * 1000, 30000); // Cap at 30s
+        console.log(`  ⏳ Rate limited, waiting ${waitTime/1000}s (attempt ${attempt}/${maxRetries})`);
+        await new Promise(r => setTimeout(r, waitTime));
+        continue;
+      }
+      
+      // Other errors - retry with exponential backoff
+      if (attempt < maxRetries) {
+        const waitTime = Math.pow(2, attempt) * 1000;
+        console.log(`  ⏳ Error: ${data.description}, retrying in ${waitTime/1000}s (attempt ${attempt}/${maxRetries})`);
+        await new Promise(r => setTimeout(r, waitTime));
+      } else {
+        throw new Error(data.description || 'Unknown error');
+      }
+    } catch (err) {
+      if (attempt === maxRetries) {
+        throw err;
+      }
+      const waitTime = Math.pow(2, attempt) * 1000;
+      console.log(`  ⏳ Error: ${err.message}, retrying in ${waitTime/1000}s (attempt ${attempt}/${maxRetries})`);
+      await new Promise(r => setTimeout(r, waitTime));
+    }
+  }
+  
+  return null;
 }
 
 async function editMessageText(chatId, messageId, text) {
   if (!process.env.TELEGRAM_BOT_TOKEN) return null;
-  await fetch(`${TELEGRAM_API}/editMessageText`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: chatId,
-      message_id: messageId,
-      text,
-      parse_mode: 'HTML'
-    })
-  });
+  try {
+    await fetch(`${TELEGRAM_API}/editMessageText`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: messageId,
+        text,
+        parse_mode: 'HTML'
+      })
+    });
+  } catch (e) {
+    // Ignore edit errors
+  }
 }
 
 function escapeHtml(str) {
@@ -239,7 +280,7 @@ async function main() {
           // Save current bundle and start new one
           bundles.push({ ...currentBundle });
           currentBundle = { chapters: [], size: 0 };
-          console.log(`  📦 Bundle complete (${currentBundle.chapters.length} chapters), starting new bundle`);
+          console.log(`  📦 Bundle complete (${bundles[bundles.length - 1].chapters.length} chapters), starting new bundle`);
         }
 
         // Add chapter to current bundle
@@ -271,6 +312,8 @@ async function main() {
     console.log(`\n📦 Created ${bundles.length} bundle(s)`);
 
     // 📤 Upload bundles to Telegram
+    const failedBundles = [];
+    
     for (const [bundleIdx, bundle] of bundles.entries()) {
       const bundleStart = bundle.chapters[0].chapNum;
       const bundleEnd = bundle.chapters[bundle.chapters.length - 1].chapNum;
@@ -299,7 +342,7 @@ async function main() {
       const bundleSize = bundle.chapters.reduce((sum, c) => sum + c.size, 0);
       console.log(`  Bundle size: ${(bundleSize / 1024 / 1024).toFixed(2)} MB`);
 
-      // Upload to Telegram
+      // Upload to Telegram with retry
       if (rootMessageId) {
         const chapterList = bundle.chapters.map(c => `Ch.${c.chapNum}`).join(', ');
         const caption = `📦 <b>Bundle ${bundleIdx + 1}/${bundles.length}</b>\n` +
@@ -307,31 +350,56 @@ async function main() {
                        `📄 Total: ${bundle.chapters.reduce((sum, c) => sum + c.pages, 0)} pages\n` +
                        `💾 ${(bundleSize / 1024 / 1024).toFixed(2)} MB`;
         
-        const result = await sendDocument(telegramChatId, bundleZipPath, bundleZipName, caption, rootMessageId);
+        const result = await sendDocument(telegramChatId, bundleZipPath, bundleZipName, caption, rootMessageId, 5);
         
-        if (result.ok) {
+        if (result && result.ok) {
           console.log(`  ✅ Uploaded successfully`);
         } else {
-          console.error(`  ❌ Upload failed: ${result.description}`);
+          console.error(`  ❌ Upload failed after all retries`);
+          failedBundles.push({ bundleIdx, bundleZipPath, bundleZipName, caption });
         }
 
-        // ⏱️ 2 second delay between bundle uploads
-        if (bundleIdx < bundles.length - 1) {
+        // ⏱️ 2 second delay between successful uploads
+        if (result && result.ok && bundleIdx < bundles.length - 1) {
           await new Promise(r => setTimeout(r, 2000));
         }
       }
 
-      // Clean up bundle ZIP
-      rmSync(bundleZipPath, { force: true });
+      // Keep bundle ZIP if failed (for retry), otherwise clean up
+      if (!failedBundles.find(f => f.bundleIdx === bundleIdx)) {
+        rmSync(bundleZipPath, { force: true });
+      }
+    }
+
+    // 🔄 Retry failed bundles
+    if (failedBundles.length > 0) {
+      console.log(`\n⚠️  ${failedBundles.length} bundle(s) failed, retrying...`);
+      
+      for (const [retryIdx, failed] of failedBundles.entries()) {
+        console.log(`\n🔄 Retrying failed bundle ${retryIdx + 1}/${failedBundles.length}`);
+        
+        const result = await sendDocument(telegramChatId, failed.bundleZipPath, failed.bundleZipName, failed.caption, rootMessageId, 3);
+        
+        if (result && result.ok) {
+          console.log(`  ✅ Retry successful`);
+          rmSync(failed.bundleZipPath, { force: true });
+        } else {
+          console.error(`  ❌ Retry failed`);
+        }
+        
+        await new Promise(r => setTimeout(r, 5000)); // Longer wait between retries
+      }
     }
 
     // Final update
     if (rootMessageId) {
+      const status = failedBundles.length === 0 ? '✅' : '⚠️';
       await editMessageText(telegramChatId, rootMessageId, 
-        `<b>✅ ${escapeHtml(mangaTitle)}</b>\n` +
+        `<b>${status} ${escapeHtml(mangaTitle)}</b>\n` +
         `<i>Complete!</i>\n` +
         `📦 ${bundles.length} bundle(s)\n` +
-        `📖 ${validChapters.length} chapter(s) total`
+        `📖 ${validChapters.length} chapter(s) total\n` +
+        (failedBundles.length > 0 ? `⚠️  ${failedBundles.length} bundle(s) failed` : '')
       );
     }
 
