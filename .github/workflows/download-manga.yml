@@ -1,0 +1,44 @@
+name: Download Manga from MangaDex
+
+on:
+  workflow_dispatch:
+    inputs:
+      manga_link:
+        description: 'MangaDex manga URL or UUID'
+        required: true
+        type: string
+        example: 'https://mangadex.org/title/123e4567-e89b-12d3-a456-426614174000'
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download manga
+        env:
+          MANGA_INPUT: ${{ inputs.manga_link }}
+        run: npm run download
+
+      - name: Upload zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: manga-archive
+          path: manga_download/*.zip
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Summary
+        run: |
+          echo "✅ Download complete!"
+          echo "📦 Check the 'Artifacts' section below to download your zip file."
