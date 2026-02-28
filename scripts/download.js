@@ -11,15 +11,21 @@ import sharp from 'sharp'; // For thumbnail resizing
 
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
 const TELEGRAM_FILE_LIMIT = 50 * 1024 * 1024;
-const MAX_CONCURRENT_PAGES = 8;
+const MAX_CONCURRENT_PAGES = 4;
 
 // 🖼️ Resize cover for Telegram thumbnail (max 320x320, <200KB)
 async function createThumbnail(sourcePath, destPath) {
   try {
     await sharp(sourcePath)
-      .resize(320, 320, { fit: 'inside', withoutEnlargement: true })
-      .jpeg({ quality: 80 })
+      // 512px is sharper on mobile screens than 320px
+      .resize(512, 512, { 
+        fit: 'inside', 
+        withoutEnlargement: true 
+      })
+      // WebP is supported by Telegram and is lighter than JPEG
+      .webp({ quality: 80 }) 
       .toFile(destPath);
+      
     return destPath;
   } catch (err) {
     console.warn(`⚠️  Thumbnail creation failed: ${err.message}`);
