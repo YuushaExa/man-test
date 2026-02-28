@@ -10,9 +10,8 @@ import { fileFromPath } from 'formdata-node/file-from-path';
 
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
 const TELEGRAM_FILE_LIMIT = 50 * 1024 * 1024;
-const MAX_CONCURRENT_PAGES = 4;
+const MAX_CONCURRENT_PAGES = 8;
 
-// 🚀 Download cover image
 async function downloadCover(coverUrl, destPath) {
   for (let i = 0; i < 3; i++) {
     try {
@@ -28,7 +27,6 @@ async function downloadCover(coverUrl, destPath) {
   }
 }
 
-// 🚀 Fast send with thumbnail support
 async function sendDocumentWithThumb(chatId, filePath, fileName, caption, replyToMessageId, thumbPath) {
   if (!process.env.TELEGRAM_BOT_TOKEN) return null;
   
@@ -110,7 +108,6 @@ function parseChapterNum(chapStr) {
   return isNaN(num) ? Infinity : num;
 }
 
-// Format chapter number without leading zeros
 function formatChapNum(num) {
   return Number(num).toString();
 }
@@ -201,12 +198,9 @@ async function main() {
     const status = manga.status ? manga.status.charAt(0).toUpperCase() + manga.status.slice(1) : 'Unknown';
     const year = manga.year || 'N/A';
     
-    // 📥 STEP 1: Get manga ID (already have it)
-    // 📥 STEP 2: Get cover ID using Cover API
+    // 📥 Fetch cover using Cover API
     console.log('📥 Fetching cover...');
     const covers = await Cover.getMangaCovers(mangaId);
-    
-    // Find main cover (usually the first one or with volume=null)
     const mainCover = covers.find(c => c.volume === null) || covers[0];
     
     let coverUrl = null;
@@ -215,9 +209,11 @@ async function main() {
     mkdirSync(workDir, { recursive: true });
     
     if (mainCover) {
-      const coverId = mainCover.id;
-      // Construct URL like: https://mangadex.org/covers/{manga-id}/{cover-id}.jpg
-      coverUrl = `https://mangadex.org/covers/${mangaId}/${coverId}.jpg`;
+      // ✅ Use fileName for the cover URL (includes .jpg extension)
+      console.log(`📥 Cover fileName: ${mainCover.fileName}`);
+      
+      // Construct URL: https://uploads.mangadex.org/covers/{manga-id}/{fileName}
+      coverUrl = `https://uploads.mangadex.org/covers/${mangaId}/${mainCover.fileName}`;
       console.log(`📥 Cover URL: ${coverUrl}`);
       console.log('📥 Downloading cover image...');
       await downloadCover(coverUrl, coverPath);
@@ -365,10 +361,7 @@ async function main() {
       if (i + 2 < bundles.length) await new Promise(r => setTimeout(r, 1000));
     }
 
-    // ❌ REMOVED: Final status update message
-    // No more "Download complete! 📦 2 bundles uploaded 📖 10 chapters total"
-
-    console.log('\n✅ All bundles uploaded successfully');
+    console.log('\n✅ All bundles uploaded');
     rmSync(workDir, { recursive: true, force: true });
     
   } catch (err) {
