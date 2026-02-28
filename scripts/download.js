@@ -10,7 +10,7 @@ import { fileFromPath } from 'formdata-node/file-from-path';
 
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
 const TELEGRAM_FILE_LIMIT = 50 * 1024 * 1024;
-const MAX_CONCURRENT_PAGES = 4;
+const MAX_CONCURRENT_PAGES = 8;
 
 async function downloadCover(coverUrl, destPath) {
   for (let i = 0; i < 3; i++) {
@@ -175,17 +175,22 @@ function selectChapters(allChapters, maxChapters) {
   return selected;
 }
 
-// 🎯 Get cover URL using official Cover API
+// 🎯 Get cover URL - construct manually from manga ID + cover filename
 async function getCoverUrl(manga) {
-  if (!manga.cover?.id) return null;
-  
-  try {
-    const cover = await Cover.get(manga.cover.id);
-    return cover?.remoteUrl || null;
-  } catch (err) {
-    console.log(`⚠️  Cover.get failed: ${err.message}`);
-    return null;
-  }
+  if (!manga.cover?.id || !manga.cover?.fileName) return null;
+  // Correct format: https://uploads.mangadex.org/covers/{mangaId}/{coverFileName}
+  return `https://uploads.mangadex.org/covers/${manga.id}/${manga.cover.fileName}`;
+}
+
+// 🎯 Get manga title - prioritize English, fallback to any available
+function getMangaTitle(manga) {
+  if (!manga?.title) return 'Unknown';
+  // Try English first
+  if (manga.title.en) return manga.title.en;
+  // Try original/japanese
+  if (manga.title.ja) return manga.title.ja;
+  // Fallback to first available
+  return Object.values(manga.title)[0] || 'Unknown';
 }
 
 async function main() {
@@ -204,14 +209,16 @@ async function main() {
     const manga = await Manga.get(mangaId);
     if (!manga) throw new Error('Manga not found');
     
-    const mangaTitle = manga.localTitle || Object.values(manga.title)[0] || 'Unknown';
+    // 🎯 CRITICAL: Store title IMMEDIATELY and never re-fetch
+    const mangaTitle = getMangaTitle(manga);
     const safeTitle = sanitize(mangaTitle);
+    
     const description = manga.description?.en || Object.values(manga.description || {})[0] || 'No description';
     const genres = manga.tags?.filter(t => t.group === 'genre').map(t => t.name?.en || Object.values(t.name)[0]) || [];
     const status = manga.status ? manga.status.charAt(0).toUpperCase() + manga.status.slice(1) : 'Unknown';
     const year = manga.year || 'N/A';
     
-    // 📥 Get cover using official Cover API (no fallback)
+    // 📥 Get cover - manual URL construction
     const workDir = join(process.cwd(), 'manga_download');
     const coverPath = join(workDir, 'cover.jpg');
     mkdirSync(workDir, { recursive: true });
@@ -257,7 +264,7 @@ async function main() {
     mkdirSync(mangaDir, { recursive: true });
     mkdirSync(bundleDir, { recursive: true });
 
-    // 📤 Post manga info with cover
+    // 📤 Post manga info with cover (use stored mangaTitle)
     let rootMessageId = null;
     if (telegramChatId && process.env.TELEGRAM_BOT_TOKEN) {
       const genresStr = genres.length > 0 ? genres.join(', ') : 'N/A';
@@ -372,13 +379,14 @@ async function main() {
       if (i + 2 < bundles.length) await new Promise(r => setTimeout(r, 1000));
     }
 
+    // 🎯 FINAL UPDATE: Use stored mangaTitle (not re-fetched)
     if (rootMessageId) {
-      await editMessageText(telegramChatId, rootMessageId, 
-        `<b>✅ ${escapeHtml(mangaTitle)}</b>\n` +
-        `<i>Download complete!</i>\n` +
-        `📦 ${bundles.length} bundles uploaded\n` +
-        `📖 ${validChapters.length} chapters total`
-      );
+      const finalText = `<b>✅ ${escapeHtml(mangaTitle)}</b>\n` +
+                       `<i>Download complete!</i>\n` +
+                       `📦 ${bundles.length} bundles uploaded\n` +
+                       `📖 ${validChapters.length} chapters total`;
+      await editMessageText(telegramChatId, rootMessageId, finalText);
+      console.log('📤 Final update posted');
     }
 
     console.log('\n🎉 Done!');
@@ -387,6 +395,8 @@ async function main() {
   } catch (err) {
     console.error(`❌ ${err.message}`);
     if (telegramChatId && process.env.TELEGRAM_BOT_TOKEN) {
+      // Use a safe title for error message
+      const errorTitle = mangaInput.includes('http') ? 'Manga Download' : 'Unknown';
       await sendText(telegramChatId, `<b>❌ Failed</b>\n<code>${escapeHtml(err.message)}</code>`);
     }
     process.exit(1);
