@@ -10,8 +10,9 @@ import { fileFromPath } from 'formdata-node/file-from-path';
 
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
 const TELEGRAM_FILE_LIMIT = 50 * 1024 * 1024;
-const MAX_CONCURRENT_PAGES = 8;
+const MAX_CONCURRENT_PAGES = 4;
 
+// 🚀 Download cover image
 async function downloadCover(coverUrl, destPath) {
   for (let i = 0; i < 3; i++) {
     try {
@@ -27,6 +28,7 @@ async function downloadCover(coverUrl, destPath) {
   }
 }
 
+// 🚀 Fast send with thumbnail support
 async function sendDocumentWithThumb(chatId, filePath, fileName, caption, replyToMessageId, thumbPath) {
   if (!process.env.TELEGRAM_BOT_TOKEN) return null;
   
@@ -108,6 +110,7 @@ function parseChapterNum(chapStr) {
   return isNaN(num) ? Infinity : num;
 }
 
+// Format chapter number without leading zeros
 function formatChapNum(num) {
   return Number(num).toString();
 }
@@ -175,24 +178,6 @@ function selectChapters(allChapters, maxChapters) {
   return selected;
 }
 
-// 🎯 Get cover URL - construct manually from manga ID + cover filename
-async function getCoverUrl(manga) {
-  if (!manga.cover?.id || !manga.cover?.fileName) return null;
-  // Correct format: https://uploads.mangadex.org/covers/{mangaId}/{coverFileName}
-  return `https://uploads.mangadex.org/covers/${manga.id}/${manga.cover.fileName}`;
-}
-
-// 🎯 Get manga title - prioritize English, fallback to any available
-function getMangaTitle(manga) {
-  if (!manga?.title) return 'Unknown';
-  // Try English first
-  if (manga.title.en) return manga.title.en;
-  // Try original/japanese
-  if (manga.title.ja) return manga.title.ja;
-  // Fallback to first available
-  return Object.values(manga.title)[0] || 'Unknown';
-}
-
 async function main() {
   const mangaInput = process.env.MANGA_INPUT;
   const useDataSaver = process.env.USE_DATA_SAVER === 'true';
@@ -203,39 +188,41 @@ async function main() {
 
   const mangaId = mangaInput.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i)?.[1] || mangaInput.trim();
   
-  console.log(`📚 ${mangaId}`);
+  console.log(`📚 Manga ID: ${mangaId}`);
 
   try {
     const manga = await Manga.get(mangaId);
     if (!manga) throw new Error('Manga not found');
     
-    // 🎯 CRITICAL: Store title IMMEDIATELY and never re-fetch
-    const mangaTitle = getMangaTitle(manga);
+    const mangaTitle = manga.localTitle || Object.values(manga.title)[0] || 'Unknown';
     const safeTitle = sanitize(mangaTitle);
-    
     const description = manga.description?.en || Object.values(manga.description || {})[0] || 'No description';
     const genres = manga.tags?.filter(t => t.group === 'genre').map(t => t.name?.en || Object.values(t.name)[0]) || [];
     const status = manga.status ? manga.status.charAt(0).toUpperCase() + manga.status.slice(1) : 'Unknown';
     const year = manga.year || 'N/A';
     
-    // 📥 Get cover - manual URL construction
+    // 📥 STEP 1: Get manga ID (already have it)
+    // 📥 STEP 2: Get cover ID using Cover API
+    console.log('📥 Fetching cover...');
+    const covers = await Cover.getMangaCovers(mangaId);
+    
+    // Find main cover (usually the first one or with volume=null)
+    const mainCover = covers.find(c => c.volume === null) || covers[0];
+    
+    let coverUrl = null;
     const workDir = join(process.cwd(), 'manga_download');
     const coverPath = join(workDir, 'cover.jpg');
     mkdirSync(workDir, { recursive: true });
     
-    console.log('📥 Fetching cover...');
-    const coverUrl = await getCoverUrl(manga);
-    
-    let coverDownloaded = false;
-    if (coverUrl) {
-      console.log(`✅ Cover URL: ${coverUrl}`);
-      const result = await downloadCover(coverUrl, coverPath);
-      if (result) {
-        coverDownloaded = true;
-        console.log('✅ Cover downloaded');
-      }
+    if (mainCover) {
+      const coverId = mainCover.id;
+      // Construct URL like: https://mangadex.org/covers/{manga-id}/{cover-id}.jpg
+      coverUrl = `https://mangadex.org/covers/${mangaId}/${coverId}.jpg`;
+      console.log(`📥 Cover URL: ${coverUrl}`);
+      console.log('📥 Downloading cover image...');
+      await downloadCover(coverUrl, coverPath);
     } else {
-      console.log('⚠️  No cover URL found');
+      console.log('⚠️  No cover found');
     }
 
     // Fetch chapters
@@ -257,14 +244,14 @@ async function main() {
     const validChapters = selectChapters(allChapters, maxChapters);
     if (validChapters.length === 0) { console.error('❌ No chapters found'); process.exit(1); }
     
-    console.log(`✅ ${validChapters.length} chapters`);
+    console.log(`✅ ${validChapters.length} chapters selected`);
 
     const mangaDir = join(workDir, 'chapters');
     const bundleDir = join(workDir, 'bundles');
     mkdirSync(mangaDir, { recursive: true });
     mkdirSync(bundleDir, { recursive: true });
 
-    // 📤 Post manga info with cover (use stored mangaTitle)
+    // 📤 Post manga info with cover
     let rootMessageId = null;
     if (telegramChatId && process.env.TELEGRAM_BOT_TOKEN) {
       const genresStr = genres.length > 0 ? genres.join(', ') : 'N/A';
@@ -275,7 +262,7 @@ async function main() {
                       `<b>🏷️ Genres:</b> ${escapeHtml(genresStr)}\n` +
                       `<b>📝 Description:</b>\n<i>${escapeHtml(description.substring(0, 800))}${description.length > 800 ? '...' : ''}</i>`;
       
-      if (coverDownloaded) {
+      if (coverPath && existsSync(coverPath)) {
         const form = new FormData();
         form.append('chat_id', telegramChatId);
         form.append('photo', await fileFromPath(coverPath), 'cover.jpg');
@@ -333,7 +320,7 @@ async function main() {
     }
 
     if (currentBundle.chapters.length > 0) bundles.push(currentBundle);
-    console.log(`\n📦 ${bundles.length} bundles`);
+    console.log(`\n📦 Created ${bundles.length} bundle(s)`);
 
     // 📤 Upload bundles with cover thumbnail
     const uploadBundle = async (bundle, bundleIdx) => {
@@ -366,8 +353,7 @@ async function main() {
                        `📄 <b>Pages:</b> ${bundle.chapters.reduce((sum, c) => sum + c.pages, 0)}\n` +
                        `💾 <b>Size:</b> ${(bundleSize/1024/1024).toFixed(1)} MB`;
         
-        const thumbPath = coverDownloaded ? coverPath : null;
-        await sendDocumentWithThumb(telegramChatId, bundleZipPath, bundleZipName, caption, rootMessageId, thumbPath);
+        await sendDocumentWithThumb(telegramChatId, bundleZipPath, bundleZipName, caption, rootMessageId, coverPath);
       }
 
       rmSync(bundleZipPath, { force: true });
@@ -379,24 +365,15 @@ async function main() {
       if (i + 2 < bundles.length) await new Promise(r => setTimeout(r, 1000));
     }
 
-    // 🎯 FINAL UPDATE: Use stored mangaTitle (not re-fetched)
-    if (rootMessageId) {
-      const finalText = `<b>✅ ${escapeHtml(mangaTitle)}</b>\n` +
-                       `<i>Download complete!</i>\n` +
-                       `📦 ${bundles.length} bundles uploaded\n` +
-                       `📖 ${validChapters.length} chapters total`;
-      await editMessageText(telegramChatId, rootMessageId, finalText);
-      console.log('📤 Final update posted');
-    }
+    // ❌ REMOVED: Final status update message
+    // No more "Download complete! 📦 2 bundles uploaded 📖 10 chapters total"
 
-    console.log('\n🎉 Done!');
+    console.log('\n✅ All bundles uploaded successfully');
     rmSync(workDir, { recursive: true, force: true });
     
   } catch (err) {
     console.error(`❌ ${err.message}`);
     if (telegramChatId && process.env.TELEGRAM_BOT_TOKEN) {
-      // Use a safe title for error message
-      const errorTitle = mangaInput.includes('http') ? 'Manga Download' : 'Unknown';
       await sendText(telegramChatId, `<b>❌ Failed</b>\n<code>${escapeHtml(err.message)}</code>`);
     }
     process.exit(1);
