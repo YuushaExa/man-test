@@ -12,7 +12,6 @@ const TELEGRAM_API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOK
 const TELEGRAM_FILE_LIMIT = 50 * 1024 * 1024;
 const MAX_CONCURRENT_PAGES = 8;
 
-// 📥 Download cover image with proper error handling
 async function downloadCover(coverUrl, destPath) {
   console.log(`📥 Downloading cover from: ${coverUrl}`);
   for (let i = 0; i < 3; i++) {
@@ -24,17 +23,13 @@ async function downloadCover(coverUrl, destPath) {
       console.log(`✅ Cover downloaded: ${destPath}`);
       return destPath;
     } catch (err) {
-      console.log(`⚠️  Cover download attempt ${i + 1} failed: ${err.message}`);
-      if (i === 2) {
-        console.log('❌ Cover download failed after 3 attempts');
-        return null;
-      }
+      console.log(`⚠️  Cover attempt ${i + 1} failed: ${err.message}`);
+      if (i === 2) return null;
       await new Promise(r => setTimeout(r, 500));
     }
   }
 }
 
-// 📤 Send document with thumbnail
 async function sendDocumentWithThumb(chatId, filePath, fileName, caption, replyToMessageId, thumbPath) {
   if (!process.env.TELEGRAM_BOT_TOKEN) return null;
   
@@ -46,12 +41,10 @@ async function sendDocumentWithThumb(chatId, filePath, fileName, caption, replyT
       if (caption) form.append('caption', caption.substring(0, 1024));
       if (replyToMessageId) form.append('reply_to_message_id', replyToMessageId);
       
-      // Telegram thumbnail requirements: JPG, <200KB, 320x320 max
       if (thumbPath && existsSync(thumbPath)) {
         try {
-          const thumbFile = await fileFromPath(thumbPath);
-          form.append('thumb', thumbFile, 'thumb.jpg');
-          console.log(`  🖼️  Using thumbnail: ${thumbPath}`);
+          form.append('thumb', await fileFromPath(thumbPath), 'thumb.jpg');
+          console.log(`  🖼️  Using thumbnail`);
         } catch (thumbErr) {
           console.log(`  ⚠️  Thumbnail error: ${thumbErr.message}`);
         }
@@ -69,8 +62,6 @@ async function sendDocumentWithThumb(chatId, filePath, fileName, caption, replyT
         return data;
       }
       
-      console.log(`  ⚠️  Upload attempt ${attempt} failed: ${data.description}`);
-      
       if (data.description?.includes('Too Many Requests')) {
         const retryAfter = data.description.match(/retry after (\d+)/)?.[1] || 3;
         await new Promise(r => setTimeout(r, Math.min(retryAfter * 1000, 10000)));
@@ -78,7 +69,6 @@ async function sendDocumentWithThumb(chatId, filePath, fileName, caption, replyT
         await new Promise(r => setTimeout(r, 2000 * attempt));
       }
     } catch (err) {
-      console.log(`  ⚠️  Upload error: ${err.message}`);
       if (attempt === 3) throw err;
       await new Promise(r => setTimeout(r, 2000 * attempt));
     }
@@ -86,12 +76,8 @@ async function sendDocumentWithThumb(chatId, filePath, fileName, caption, replyT
   return null;
 }
 
-// 📤 Send photo (for initial manga info)
 async function sendPhoto(chatId, photoPath, caption) {
-  if (!process.env.TELEGRAM_BOT_TOKEN || !existsSync(photoPath)) {
-    console.log('⚠️  Cannot send photo: no token or file missing');
-    return null;
-  }
+  if (!process.env.TELEGRAM_BOT_TOKEN || !existsSync(photoPath)) return null;
   
   try {
     const form = new FormData();
@@ -108,12 +94,10 @@ async function sendPhoto(chatId, photoPath, caption) {
     const data = await res.json();
     
     if (data.ok) {
-      console.log('📤 Manga info posted with cover photo');
+      console.log('📤 Posted manga info with cover photo');
       return data.result.message_id;
-    } else {
-      console.log(`⚠️  SendPhoto failed: ${data.description}`);
-      return null;
     }
+    return null;
   } catch (err) {
     console.log(`⚠️  SendPhoto error: ${err.message}`);
     return null;
@@ -165,7 +149,6 @@ function parseChapterNum(chapStr) {
   return isNaN(num) ? Infinity : num;
 }
 
-// Format chapter number without leading zeros
 function formatChapNum(num) {
   return Number(num).toString();
 }
@@ -233,6 +216,47 @@ function selectChapters(allChapters, maxChapters) {
   return selected;
 }
 
+// 🔍 Get cover URL from manga object
+function getCoverUrl(manga) {
+  // Method 1: Direct cover property
+  if (manga.cover && manga.cover.fileName) {
+    return `https://uploads.mangadex.org/covers/${manga.id}/${manga.cover.fileName}`;
+  }
+  
+  // Method 2: From relationships
+  if (manga.relationships) {
+    const coverRel = manga.relationships.find(r => r.type === 'cover_art');
+    if (coverRel && coverRel.attributes?.fileName) {
+      return `https://uploads.mangadex.org/covers/${manga.id}/${coverRel.attributes.fileName}`;
+    }
+    // Try without attributes
+    if (coverRel && coverRel.id) {
+      return `https://uploads.mangadex.org/covers/${manga.id}/${coverRel.id}.jpg`;
+    }
+  }
+  
+  // Method 3: Try common cover file names
+  return `https://uploads.mangadex.org/covers/${manga.id}/cover.jpg`;
+}
+
+// 🔍 Get description from manga object
+function getDescription(manga) {
+  if (!manga.description) return 'No description available';
+  
+  // Try English first
+  if (manga.description.en) {
+    return manga.description.en;
+  }
+  
+  // Try any available language
+  const langs = Object.keys(manga.description);
+  if (langs.length > 0) {
+    return manga.description[langs[0]];
+  }
+  
+  return 'No description available';
+}
+
 async function main() {
   const mangaInput = process.env.MANGA_INPUT;
   const useDataSaver = process.env.USE_DATA_SAVER === 'true';
@@ -251,42 +275,35 @@ async function main() {
     const manga = await Manga.get(mangaId);
     if (!manga) throw new Error('Manga not found');
     
+    console.log('🔍 Manga object keys:', Object.keys(manga).join(', '));
+    console.log('🔍 Manga relationships:', manga.relationships?.length || 0, 'items');
+    
     const mangaTitle = manga.localTitle || Object.values(manga.title)[0] || 'Unknown';
     const safeTitle = sanitize(mangaTitle);
-    const description = manga.description?.en || Object.values(manga.description || {})[0] || 'No description available';
+    const description = getDescription(manga);
     const genres = manga.tags?.filter(t => t.group === 'genre').map(t => t.name?.en || Object.values(t.name)[0]) || [];
     const status = manga.status ? manga.status.charAt(0).toUpperCase() + manga.status.slice(1) : 'Unknown';
     const year = manga.year || 'N/A';
     
     console.log(`📖 Title: ${mangaTitle}`);
     console.log(`🏷️  Genres: ${genres.join(', ') || 'N/A'}`);
+    console.log(`📝 Description length: ${description.length} chars`);
 
-    // 📥 Setup working directory
     const workDir = join(process.cwd(), 'manga_download');
     const coverPath = join(workDir, 'cover.jpg');
     mkdirSync(workDir, { recursive: true });
     
-    // 📥 Download cover image
-    let coverUrl = null;
-    if (manga.cover) {
-      coverUrl = `https://uploads.mangadex.org/covers/${manga.id}/${manga.cover.fileName}`;
-    } else {
-      // Try to get cover from relationships
-      const coverRel = manga.relationships?.find(r => r.type === 'cover_art');
-      if (coverRel) {
-        coverUrl = `https://uploads.mangadex.org/covers/${manga.id}/${coverRel.attributes?.fileName}`;
-      }
-    }
+    // 🔍 Get cover URL using improved method
+    const coverUrl = getCoverUrl(manga);
+    console.log(`🔍 Cover URL: ${coverUrl}`);
     
     let hasCover = false;
     if (coverUrl) {
       const coverResult = await downloadCover(coverUrl, coverPath);
       hasCover = coverResult !== null;
-    } else {
-      console.log('⚠️  No cover URL found for this manga');
+      console.log(`🖼️  Cover downloaded: ${hasCover}`);
     }
 
-    // Fetch chapters
     console.log('📖 Fetching chapters...');
     const allChapters = [];
     let offset = 0;
@@ -324,19 +341,16 @@ async function main() {
                       `<b>🏷️ Genres:</b> ${escapeHtml(genresStr)}\n` +
                       `<b>📝 Description:</b>\n<i>${escapeHtml(description.substring(0, 800))}${description.length > 800 ? '...' : ''}</i>`;
       
-      // Send with cover photo if available
       if (hasCover && existsSync(coverPath)) {
         rootMessageId = await sendPhoto(telegramChatId, coverPath, infoText);
       }
       
-      // Fallback to text only
       if (!rootMessageId) {
         console.log('⚠️  Falling back to text-only message');
         rootMessageId = await sendText(telegramChatId, infoText);
       }
     }
 
-    // 📦 Bundle chapters
     const bundles = [];
     let currentBundle = { chapters: [], size: 0 };
     
@@ -378,7 +392,6 @@ async function main() {
     if (currentBundle.chapters.length > 0) bundles.push(currentBundle);
     console.log(`\n📦 ${bundles.length} bundles created`);
 
-    // 📤 Upload bundles with cover thumbnail
     const uploadBundle = async (bundle, bundleIdx) => {
       const bundleStart = formatChapNum(bundle.chapters[0].chapNum);
       const bundleEnd = formatChapNum(bundle.chapters[bundle.chapters.length - 1].chapNum);
@@ -409,7 +422,6 @@ async function main() {
                        `📄 <b>Pages:</b> ${bundle.chapters.reduce((sum, c) => sum + c.pages, 0)}\n` +
                        `💾 <b>Size:</b> ${(bundleSize/1024/1024).toFixed(1)} MB`;
         
-        // Use cover as thumbnail (only if it exists)
         const thumbToUse = (hasCover && existsSync(coverPath)) ? coverPath : null;
         await sendDocumentWithThumb(telegramChatId, bundleZipPath, bundleZipName, caption, rootMessageId, thumbToUse);
       }
@@ -423,7 +435,6 @@ async function main() {
       if (i + 2 < bundles.length) await new Promise(r => setTimeout(r, 1000));
     }
 
-    // Final update
     if (rootMessageId) {
       await editMessageText(telegramChatId, rootMessageId, 
         `<b>✅ ${escapeHtml(mangaTitle)}</b>\n` +
