@@ -12,7 +12,6 @@ const TELEGRAM_API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOK
 const TELEGRAM_FILE_LIMIT = 50 * 1024 * 1024;
 const MAX_CONCURRENT_PAGES = 4;
 
-// 🚀 Download cover image
 async function downloadCover(coverUrl, destPath) {
   for (let i = 0; i < 3; i++) {
     try {
@@ -28,7 +27,6 @@ async function downloadCover(coverUrl, destPath) {
   }
 }
 
-// 🚀 Fast send with thumbnail support
 async function sendDocumentWithThumb(chatId, filePath, fileName, caption, replyToMessageId, thumbPath) {
   if (!process.env.TELEGRAM_BOT_TOKEN) return null;
   
@@ -110,7 +108,6 @@ function parseChapterNum(chapStr) {
   return isNaN(num) ? Infinity : num;
 }
 
-// Format chapter number without leading zeros
 function formatChapNum(num) {
   return Number(num).toString();
 }
@@ -178,6 +175,19 @@ function selectChapters(allChapters, maxChapters) {
   return selected;
 }
 
+// 🎯 Get cover URL using official Cover API
+async function getCoverUrl(manga) {
+  if (!manga.cover?.id) return null;
+  
+  try {
+    const cover = await Cover.get(manga.cover.id);
+    return cover?.remoteUrl || null;
+  } catch (err) {
+    console.log(`⚠️  Cover.get failed: ${err.message}`);
+    return null;
+  }
+}
+
 async function main() {
   const mangaInput = process.env.MANGA_INPUT;
   const useDataSaver = process.env.USE_DATA_SAVER === 'true';
@@ -201,51 +211,24 @@ async function main() {
     const status = manga.status ? manga.status.charAt(0).toUpperCase() + manga.status.slice(1) : 'Unknown';
     const year = manga.year || 'N/A';
     
-    // 📥 Get cover using official Cover API
+    // 📥 Get cover using official Cover API (no fallback)
     const workDir = join(process.cwd(), 'manga_download');
     const coverPath = join(workDir, 'cover.jpg');
     mkdirSync(workDir, { recursive: true });
     
-    let coverUrl = null;
     console.log('📥 Fetching cover...');
+    const coverUrl = await getCoverUrl(manga);
     
-    // Method 1: Use manga.cover if available
-    if (manga.cover) {
-      try {
-        const coverObj = await Cover.get(manga.cover.id);
-        if (coverObj) {
-          coverUrl = coverObj.remoteUrl; // Official method to get cover URL
-          console.log(`✅ Cover found: ${coverObj.fileName}`);
-        }
-      } catch (err) {
-        console.log('⚠️  Cover.get failed, trying alternative...');
-      }
-    }
-    
-    // Method 2: Fallback - get covers from manga
-    if (!coverUrl) {
-      try {
-        const covers = await manga.getCovers({ limit: 1, order: { volume: 'asc' } });
-        if (covers && covers.length > 0) {
-          coverUrl = covers[0].remoteUrl;
-          console.log(`✅ Cover from getCovers: ${covers[0].fileName}`);
-        }
-      } catch (err) {
-        console.log('⚠️  getCovers failed');
-      }
-    }
-    
-    // Method 3: Manual construction as last resort
-    if (!coverUrl && manga.cover) {
-      coverUrl = `https://uploads.mangadex.org/covers/${manga.id}/${manga.cover.fileName}`;
-      console.log('⚠️  Using manual cover URL');
-    }
-    
-    // Download cover if URL found
+    let coverDownloaded = false;
     if (coverUrl) {
-      await downloadCover(coverUrl, coverPath);
+      console.log(`✅ Cover URL: ${coverUrl}`);
+      const result = await downloadCover(coverUrl, coverPath);
+      if (result) {
+        coverDownloaded = true;
+        console.log('✅ Cover downloaded');
+      }
     } else {
-      console.log('❌ No cover found');
+      console.log('⚠️  No cover URL found');
     }
 
     // Fetch chapters
@@ -285,8 +268,7 @@ async function main() {
                       `<b>🏷️ Genres:</b> ${escapeHtml(genresStr)}\n` +
                       `<b>📝 Description:</b>\n<i>${escapeHtml(description.substring(0, 800))}${description.length > 800 ? '...' : ''}</i>`;
       
-      // Send with cover as photo first
-      if (coverPath && existsSync(coverPath)) {
+      if (coverDownloaded) {
         const form = new FormData();
         form.append('chat_id', telegramChatId);
         form.append('photo', await fileFromPath(coverPath), 'cover.jpg');
@@ -377,7 +359,8 @@ async function main() {
                        `📄 <b>Pages:</b> ${bundle.chapters.reduce((sum, c) => sum + c.pages, 0)}\n` +
                        `💾 <b>Size:</b> ${(bundleSize/1024/1024).toFixed(1)} MB`;
         
-        await sendDocumentWithThumb(telegramChatId, bundleZipPath, bundleZipName, caption, rootMessageId, coverPath);
+        const thumbPath = coverDownloaded ? coverPath : null;
+        await sendDocumentWithThumb(telegramChatId, bundleZipPath, bundleZipName, caption, rootMessageId, thumbPath);
       }
 
       rmSync(bundleZipPath, { force: true });
@@ -403,7 +386,6 @@ async function main() {
     
   } catch (err) {
     console.error(`❌ ${err.message}`);
-    console.error(err.stack);
     if (telegramChatId && process.env.TELEGRAM_BOT_TOKEN) {
       await sendText(telegramChatId, `<b>❌ Failed</b>\n<code>${escapeHtml(err.message)}</code>`);
     }
