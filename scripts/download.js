@@ -7,10 +7,25 @@ import archiver from 'archiver';
 import { join } from 'path';
 import { FormData } from 'formdata-node';
 import { fileFromPath } from 'formdata-node/file-from-path';
+import sharp from 'sharp'; // For thumbnail resizing
 
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
 const TELEGRAM_FILE_LIMIT = 50 * 1024 * 1024;
 const MAX_CONCURRENT_PAGES = 8;
+
+// 🖼️ Resize cover for Telegram thumbnail (max 320x320, <200KB)
+async function createThumbnail(sourcePath, destPath) {
+  try {
+    await sharp(sourcePath)
+      .resize(320, 320, { fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 80 })
+      .toFile(destPath);
+    return destPath;
+  } catch (err) {
+    console.warn(`⚠️  Thumbnail creation failed: ${err.message}`);
+    return null;
+  }
+}
 
 async function downloadCover(coverUrl, destPath) {
   for (let i = 0; i < 3; i++) {
@@ -37,6 +52,8 @@ async function sendDocumentWithThumb(chatId, filePath, fileName, caption, replyT
       form.append('document', await fileFromPath(filePath), fileName);
       if (caption) form.append('caption', caption.substring(0, 1024));
       if (replyToMessageId) form.append('reply_to_message_id', replyToMessageId);
+      
+      // Attach thumbnail if available
       if (thumbPath && existsSync(thumbPath)) {
         form.append('thumb', await fileFromPath(thumbPath), 'thumb.jpg');
       }
@@ -80,17 +97,6 @@ async function sendText(chatId, text, replyToMessageId = null, disablePreview = 
     const data = await res.json();
     return data.ok ? data.result.message_id : null;
   } catch { return null; }
-}
-
-async function editMessageText(chatId, messageId, text) {
-  if (!process.env.TELEGRAM_BOT_TOKEN || !messageId) return;
-  try {
-    await fetch(`${TELEGRAM_API}/editMessageText`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, message_id: messageId, text, parse_mode: 'HTML' })
-    });
-  } catch {}
 }
 
 function escapeHtml(str) {
@@ -198,27 +204,27 @@ async function main() {
     const status = manga.status ? manga.status.charAt(0).toUpperCase() + manga.status.slice(1) : 'Unknown';
     const year = manga.year || 'N/A';
     
-    // 📥 Fetch cover using Cover API
+    // 📥 Fetch cover
     console.log('📥 Fetching cover...');
     const covers = await Cover.getMangaCovers(mangaId);
     const mainCover = covers.find(c => c.volume === null) || covers[0];
     
-    let coverUrl = null;
     const workDir = join(process.cwd(), 'manga_download');
-    const coverPath = join(workDir, 'cover.jpg');
     mkdirSync(workDir, { recursive: true });
     
+    const coverPath = join(workDir, 'cover.jpg');
+    const thumbPath = join(workDir, 'thumb.jpg');
+    let coverUrl = null;
+    
     if (mainCover) {
-      // ✅ Use fileName for the cover URL (includes .jpg extension)
       console.log(`📥 Cover fileName: ${mainCover.fileName}`);
-      
-      // Construct URL: https://uploads.mangadex.org/covers/{manga-id}/{fileName}
       coverUrl = `https://uploads.mangadex.org/covers/${mangaId}/${mainCover.fileName}`;
-      console.log(`📥 Cover URL: ${coverUrl}`);
-      console.log('📥 Downloading cover image...');
+      console.log('📥 Downloading cover...');
       await downloadCover(coverUrl, coverPath);
-    } else {
-      console.log('⚠️  No cover found');
+      
+      // 🖼️ Create thumbnail for Telegram bundles
+      console.log('🖼️ Creating thumbnail...');
+      await createThumbnail(coverPath, thumbPath);
     }
 
     // Fetch chapters
@@ -349,7 +355,8 @@ async function main() {
                        `📄 <b>Pages:</b> ${bundle.chapters.reduce((sum, c) => sum + c.pages, 0)}\n` +
                        `💾 <b>Size:</b> ${(bundleSize/1024/1024).toFixed(1)} MB`;
         
-        await sendDocumentWithThumb(telegramChatId, bundleZipPath, bundleZipName, caption, rootMessageId, coverPath);
+        // ✅ Use thumbnail for bundle upload
+        await sendDocumentWithThumb(telegramChatId, bundleZipPath, bundleZipName, caption, rootMessageId, thumbPath);
       }
 
       rmSync(bundleZipPath, { force: true });
