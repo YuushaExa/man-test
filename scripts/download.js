@@ -7,7 +7,7 @@ import archiver from 'archiver';
 import { join } from 'path';
 import { FormData } from 'formdata-node';
 import { fileFromPath } from 'formdata-node/file-from-path';
-import sharp from 'sharp'; // For thumbnail resizing
+import sharp from 'sharp';
 
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
 const TELEGRAM_FILE_LIMIT = 50 * 1024 * 1024;
@@ -19,7 +19,6 @@ async function createThumbnail(sourcePath, destPath) {
       .resize(54, 54)
       .jpeg({ quality: 80 })
       .toFile(destPath);
-
     return destPath;
   } catch (err) {
     console.warn(`⚠️  Thumbnail creation failed: ${err.message}`);
@@ -53,7 +52,6 @@ async function sendDocumentWithThumb(chatId, filePath, fileName, caption, replyT
       if (caption) form.append('caption', caption.substring(0, 1024));
       if (replyToMessageId) form.append('reply_to_message_id', replyToMessageId);
       
-      // Attach thumbnail if available
       if (thumbPath && existsSync(thumbPath)) {
         form.append('thumb', await fileFromPath(thumbPath), 'thumb.jpg');
       }
@@ -222,7 +220,6 @@ async function main() {
       console.log('📥 Downloading cover...');
       await downloadCover(coverUrl, coverPath);
       
-      // 🖼️ Create thumbnail for Telegram bundles
       console.log('🖼️ Creating thumbnail...');
       await createThumbnail(coverPath, thumbPath);
     }
@@ -244,36 +241,22 @@ async function main() {
     }
     
     const validChapters = selectChapters(allChapters, maxChapters);
-    if (validChapters.length === 0) { console.error('❌ No chapters found'); process.exit(0); }
-    
-    console.log(`✅ ${validChapters.length} chapters selected`);
 
-    const mangaDir = join(workDir, 'chapters');
-    const bundleDir = join(workDir, 'bundles');
-    mkdirSync(mangaDir, { recursive: true });
-    mkdirSync(bundleDir, { recursive: true });
-
-    // 📤 Post manga info with cover
+    // 📤 Post manga info with cover (MOVED UP - always posts, even if no chapters)
     let rootMessageId = null;
     if (telegramChatId && process.env.TELEGRAM_BOT_TOKEN) {
-    const genresStr = genres.length > 0 ? genres.join(', ') : 'N/A';
-const truncatedDesc = description.length > 800 
-  ? description.substring(0, 800) + '...' 
-  : description;
+      const genresStr = genres.length > 0 ? genres.join(', ') : 'N/A';
+      const truncatedDesc = description.length > 800 
+        ? description.substring(0, 800) + '...' 
+        : description;
 
-// Helper to safely escape HTML entities (keep this!)
-const escapeHtml = (text) => {
-  const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
-  return text.replace(/[&<>"']/g, m => map[m]);
-};
-
-const infoText = 
-  `<b>${escapeHtml(mangaTitle)}</b>\n\n` +
-  `<b>Chapters:</b> ${validChapters.length} (${escapeHtml(status)})\n` +
-  `<b>Year:</b> ${year}\n` +
-  `<b>Genres:</b> <code>${escapeHtml(genresStr)}</code>\n` +
-  `<b>Description</b>\n<blockquote><i>${escapeHtml(truncatedDesc)}</i></blockquote>`;
-      
+      const infoText = 
+        `<b>${escapeHtml(mangaTitle)}</b>\n\n` +
+        `<b>Chapters:</b> ${validChapters.length} (${escapeHtml(status)})\n` +
+        `<b>Year:</b> ${year}\n` +
+        `<b>Genres:</b> <code>${escapeHtml(genresStr)}</code>\n` +
+        `<b>Description</b>\n<blockquote><i>${escapeHtml(truncatedDesc)}</i></blockquote>`;
+        
       if (coverPath && existsSync(coverPath)) {
         const form = new FormData();
         form.append('chat_id', telegramChatId);
@@ -291,6 +274,23 @@ const infoText =
         rootMessageId = await sendText(telegramChatId, infoText, null, false);
       }
     }
+
+    // ⚠️ Handle no chapters gracefully (NO LONGER A FATAL ERROR)
+    if (validChapters.length === 0) { 
+      console.warn('⚠️ No chapters found, but manga info was posted');
+      if (telegramChatId && process.env.TELEGRAM_BOT_TOKEN && rootMessageId) {
+        await sendText(telegramChatId, '<i>No downloadable chapters found for this manga.</i>', rootMessageId);
+      }
+      rmSync(workDir, { recursive: true, force: true });
+      process.exit(0); // ✅ Exit successfully
+    }
+
+    console.log(`✅ ${validChapters.length} chapters selected`);
+
+    const mangaDir = join(workDir, 'chapters');
+    const bundleDir = join(workDir, 'bundles');
+    mkdirSync(mangaDir, { recursive: true });
+    mkdirSync(bundleDir, { recursive: true });
 
     // 📦 Bundle chapters
     const bundles = [];
@@ -362,7 +362,6 @@ const infoText =
         const chapterList = bundle.chapters.map(c => `Ch.${formatChapNum(c.chapNum)}`).join(', ');
         const caption = `Part: ${bundleIdx + 1}/${bundles.length}`;
         
-        // ✅ Use thumbnail for bundle upload
         await sendDocumentWithThumb(telegramChatId, bundleZipPath, bundleZipName, caption, rootMessageId, thumbPath);
       }
 
