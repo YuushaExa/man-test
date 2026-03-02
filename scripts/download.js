@@ -244,7 +244,7 @@ async function main() {
     }
     
     const validChapters = selectChapters(allChapters, maxChapters);
-    if (validChapters.length === 0) { console.error('❌ No chapters found'); process.exit(1); }
+    if (validChapters.length === 0) { console.error('❌ No chapters found'); process.exit(0); }
     
     console.log(`✅ ${validChapters.length} chapters selected`);
 
