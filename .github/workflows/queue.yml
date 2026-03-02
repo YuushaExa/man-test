@@ -1,0 +1,81 @@
+name: MangaDex to Telegram Queue
+
+on:
+  workflow_dispatch:
+    inputs:
+      config_file:
+        description: 'Path to JSON config file'
+        required: false
+        default: 'manga_list.json'
+        type: string
+
+jobs:
+  # Job 1: Read and parse the JSON list
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.read-json.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Read JSON config
+        id: read-json
+        run: |
+          if [ ! -f "${{ inputs.config_file }}" ]; then
+            echo "Error: File ${{ inputs.config_file }} not found!"
+            exit 1
+          fi
+          # Pass the raw JSON content to the output
+          echo "matrix=$(jq -c '.' ${{ inputs.config_file }})" >> $GITHUB_OUTPUT
+
+  # Job 2: Process each item sequentially
+  download:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 1  # Process 1 by 1 to respect API limits
+      matrix:
+        item: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - run: npm install
+      
+      - name: Set variables with defaults
+        id: vars
+        run: |
+          # Check if the matrix item is a simple string or an object
+          if [ "$(echo '${{ matrix.item }}' | jq -r 'type')" = "string" ]; then
+            # Simple string format: just the link
+            echo "link=${{ matrix.item }}" >> $GITHUB_OUTPUT
+            echo "use_data_saver=true" >> $GITHUB_OUTPUT
+            echo "max_chapters=1000000" >> $GITHUB_OUTPUT
+          else
+            # Object format: extract properties or use defaults
+            LINK=$(echo '${{ matrix.item }}' | jq -r '.link')
+            DATA_SAVER=$(echo '${{ matrix.item }}' | jq -r '.use_data_saver // true')
+            MAX_CH=$(echo '${{ matrix.item }}' | jq -r '.max_chapters // 1000000')
+            
+            echo "link=$LINK" >> $GITHUB_OUTPUT
+            echo "use_data_saver=$DATA_SAVER" >> $GITHUB_OUTPUT
+            echo "max_chapters=$MAX_CH" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download and upload to Telegram
+        env:
+          MANGA_INPUT: ${{ steps.vars.outputs.link }}
+          USE_DATA_SAVER: ${{ steps.vars.outputs.use_data_saver }}
+          MAX_CHAPTERS: ${{ steps.vars.outputs.max_chapters }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: npm run download
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf manga_download
