@@ -16,7 +16,7 @@ const MAX_CONCURRENT_PAGES = 4;
 async function createThumbnail(sourcePath, destPath) {
   try {
     await sharp(sourcePath)
-      .resize(240, 320)
+      .resize(54, 54)
       .jpeg({ quality: 80 })
       .toFile(destPath);
 
@@ -360,7 +360,7 @@ const infoText =
 
       if (rootMessageId) {
         const chapterList = bundle.chapters.map(c => `Ch.${formatChapNum(c.chapNum)}`).join(', ');
-        const caption = `Part: ${bundleIdx + 1}/${bundles.length}\n` + `Chapters: ${chapterList}`;
+        const caption = `Part: ${bundleIdx + 1}/${bundles.length}`;
         
         // ✅ Use thumbnail for bundle upload
         await sendDocumentWithThumb(telegramChatId, bundleZipPath, bundleZipName, caption, rootMessageId, thumbPath);
