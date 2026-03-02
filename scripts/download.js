@@ -268,11 +268,11 @@ const escapeHtml = (text) => {
 };
 
 const infoText = 
-  `<b>${escapeHtml(mangaTitle)}</b>\n` +
+  `<b>${escapeHtml(mangaTitle)}</b>\n\n` +
   `<b>Chapters:</b> ${validChapters.length} (${escapeHtml(status)})\n` +
   `<b>Year:</b> ${year}\n` +
   `<b>Genres:</b> <code>${escapeHtml(genresStr)}</code>\n` +
-  `<blockquote><i>${escapeHtml(truncatedDesc)}</i></blockquote>`;
+  `<b>Description</b>\n<blockquote><i>${escapeHtml(truncatedDesc)}</i></blockquote>`;
       
       if (coverPath && existsSync(coverPath)) {
         const form = new FormData();
@@ -360,7 +360,7 @@ const infoText =
 
       if (rootMessageId) {
         const chapterList = bundle.chapters.map(c => `Ch.${formatChapNum(c.chapNum)}`).join(', ');
-        const caption = `Part: ${bundleIdx + 1}/${bundles.length}` + `Chapters: ${chapterList}`;
+        const caption = `Part: ${bundleIdx + 1}/${bundles.length}\n` + `Chapters: ${chapterList}`;
         
         // ✅ Use thumbnail for bundle upload
         await sendDocumentWithThumb(telegramChatId, bundleZipPath, bundleZipName, caption, rootMessageId, thumbPath);
