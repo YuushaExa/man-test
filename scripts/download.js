@@ -251,6 +251,9 @@ async function main() {
     const manga = await Manga.get(mangaId);
     if (!manga) throw new Error('Manga not found');
     
+    const relAuthors = manga.relationships?.filter(r => r.type === 'author');
+console.log('🔍 Relationship Authors:', JSON.stringify(relAuthors, null, 2));
+    
     const mangaTitle = manga.localTitle || Object.values(manga.title)[0] || 'Unknown';
     const safeTitle = sanitize(mangaTitle);
     const description = manga.description?.en || Object.values(manga.description || {})[0] || 'No description';
