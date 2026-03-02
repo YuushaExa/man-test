@@ -153,27 +153,21 @@ function formatAltTitles(altTitles, limit = 3) {
   return titles.length > 0 ? titles.join(' • ') : null;
 }
 
-// ✨ NEW: Helper to format authors/artists
 function formatPeople(manga, role = 'author') {
-  // Try direct authors/artists array first (mangadex-full-api style)
-  let people = manga[role + 's'];
+  // Search relationships for full author/artist data
+  const people = manga.relationships?.filter(r => {
+    const isCorrectType = r.type?.toLowerCase() === role;
+    const hasName = r.attributes?.name && typeof r.attributes.name === 'object';
+    return isCorrectType && hasName;
+  }) || [];
   
-  // Fallback: parse from relationships array (raw API style)
-  if (!people || people.length === 0) {
-    people = manga.relationships?.filter(r => 
-      r.type?.toLowerCase() === role && r.attributes?.name
-    ) || [];
-  }
+  if (people.length === 0) return 'Unknown';
   
-  if (!people || people.length === 0) return 'Unknown';
-  
-  const names = people
-    .map(p => {
-      // Handle both { name: {...} } and { attributes: { name: {...} } }
-      const nameObj = p.attributes?.name || p.name;
-      return getNameInLang({ name: nameObj });
-    })
-    .filter(n => n && n !== 'Unknown');
+  const names = people.map(p => {
+    const nameObj = p.attributes.name;
+    // Prefer English, then Japanese, then any available language
+    return nameObj.en || nameObj.ja || nameObj['zh-cn'] || nameObj['zh'] || Object.values(nameObj)[0] || 'Unknown';
+  }).filter(n => n && n !== 'Unknown');
   
   return names.length > 0 ? names.join(', ') : 'Unknown';
 }
@@ -256,8 +250,6 @@ async function main() {
   try {
     const manga = await Manga.get(mangaId);
     if (!manga) throw new Error('Manga not found');
-    console.log('🔍 Authors:', JSON.stringify(manga.authors || manga.relationships?.filter(r => r.type === 'author'), null, 2));
-    console.log('🔍 Artists:', JSON.stringify(manga.artists || manga.relationships?.filter(r => r.type === 'artist'), null, 2));
     
     const mangaTitle = manga.localTitle || Object.values(manga.title)[0] || 'Unknown';
     const safeTitle = sanitize(mangaTitle);
