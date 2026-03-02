@@ -13,6 +13,81 @@ const TELEGRAM_API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOK
 const TELEGRAM_FILE_LIMIT = 50 * 1024 * 1024;
 const MAX_CONCURRENT_PAGES = 4;
 
+// ✨ Cache to avoid duplicate author/artist fetches
+const personCache = new Map();
+
+// ✨ Fetch full author/artist data by ID from MangaDex API
+async function fetchPersonById(personId) {
+  try {
+    const res = await fetch(`https://api.mangadex.org/author/${personId}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.data?.attributes?.name || null;
+  } catch {
+    return null;
+  }
+}
+
+// ✨ Get person name by ID with caching
+async function getPersonName(personId) {
+  if (personCache.has(personId)) return personCache.get(personId);
+  
+  const nameObj = await fetchPersonById(personId);
+  if (!nameObj) {
+    personCache.set(personId, 'Unknown');
+    return 'Unknown';
+  }
+  
+  // Prefer English > Japanese > Chinese > any first value
+  const name = nameObj.en || nameObj.ja || nameObj['zh-cn'] || nameObj['zh'] || Object.values(nameObj)[0] || 'Unknown';
+  personCache.set(personId, name);
+  return name;
+}
+
+// ✨ Format people from reference IDs (authors/artists arrays contain {id, type} refs)
+async function formatPeopleFromRefs(peopleRefs, role = 'author') {
+  if (!peopleRefs || peopleRefs.length === 0) return 'Unknown';
+  
+  const names = [];
+  for (const ref of peopleRefs) {
+    if (ref?.id) {
+      const name = await getPersonName(ref.id);
+      if (name && name !== 'Unknown') names.push(name);
+    }
+  }
+  
+  return names.length > 0 ? names.join(', ') : 'Unknown';
+}
+
+// ✨ Helper to format alternative titles (JP and CN only)
+function formatAltTitles(altTitles, limit = 3) {
+  if (!altTitles || altTitles.length === 0) return null;
+  
+  // ✨ Filter for Japanese (ja/jp) and Chinese (zh/cn) only
+  const filtered = altTitles.filter(t => {
+    const lang = Object.keys(t)[0]?.toLowerCase();
+    return ['ja', 'jp'].includes(lang) || ['zh', 'cn', 'zh-cn', 'zh-tw'].includes(lang);
+  });
+  
+  const titles = filtered
+    .map(t => {
+      const lang = Object.keys(t)[0].toLowerCase();
+      const title = t[lang];
+      
+      // ✨ Label by language for clarity
+      if (['ja', 'jp'].includes(lang)) {
+        return `[JP] ${title}`;
+      } else if (['zh-tw'].includes(lang)) {
+        return `[CN-TW] ${title}`;
+      } else {
+        return `[CN] ${title}`;
+      }
+    })
+    .slice(0, limit);
+  
+  return titles.length > 0 ? titles.join(' • ') : null;
+}
+
 async function createThumbnail(sourcePath, destPath) {
   try {
     await sharp(sourcePath)
@@ -116,37 +191,6 @@ function formatChapNum(num) {
   return Number(num).toString();
 }
 
-
-
-function formatAltTitles(altTitles, limit = 3) {
-  if (!altTitles || altTitles.length === 0) return null;
-  
-  // ✨ Filter for Japanese (ja/jp) and Chinese (zh/cn) only
-  const filtered = altTitles.filter(t => {
-    const lang = Object.keys(t)[0]?.toLowerCase();
-    return ['ja', 'jp'].includes(lang) || ['zh', 'cn', 'zh-cn', 'zh-tw'].includes(lang);
-  });
-  
-  const titles = filtered
-    .map(t => {
-      const lang = Object.keys(t)[0].toLowerCase();
-      const title = t[lang];
-      
-      // ✨ Label by language for clarity
-      if (['ja', 'jp'].includes(lang)) {
-        return `[JP] ${title}`;
-      } else if (['zh-tw'].includes(lang)) {
-        return `[CN-TW] ${title}`;
-      } else {
-        return `[CN] ${title}`;
-      }
-    })
-    .slice(0, limit); // Apply limit after filtering
-  
-  return titles.length > 0 ? titles.join(' • ') : null;
-}
-
-
 async function downloadPages(pages, chapDir) {
   const downloadPage = async (pageUrl, pageIdx) => {
     const ext = pageUrl.split('.').pop().split('?')[0] || 'jpg';
@@ -226,9 +270,6 @@ async function main() {
     const manga = await Manga.get(mangaId);
     if (!manga) throw new Error('Manga not found');
     
-    const relAuthors = manga.relationships?.filter(r => r.type === 'author');
-console.log('🔍 Relationship Authors:', JSON.stringify(relAuthors, null, 2));
-    
     const mangaTitle = manga.localTitle || Object.values(manga.title)[0] || 'Unknown';
     const safeTitle = sanitize(mangaTitle);
     const description = manga.description?.en || Object.values(manga.description || {})[0] || 'No description';
@@ -236,6 +277,11 @@ console.log('🔍 Relationship Authors:', JSON.stringify(relAuthors, null, 2));
     const status = manga.status ? manga.status.charAt(0).toUpperCase() + manga.status.slice(1) : 'Unknown';
     const year = manga.year || 'N/A';
     
+    // ✨ Extract authors, artists (async), and alternative titles
+    const [authors, artists] = await Promise.all([
+      formatPeopleFromRefs(manga.authors, 'author'),
+      formatPeopleFromRefs(manga.artists, 'artist')
+    ]);
     const altTitles = formatAltTitles(manga.altTitles);
     
     // 📥 Fetch cover
@@ -286,6 +332,7 @@ console.log('🔍 Relationship Authors:', JSON.stringify(relAuthors, null, 2));
         ? description.substring(0, 800) + '...' 
         : description;
 
+      // ✨ Build enhanced info text with authors, artists, alt titles
       let infoText = `<b>${escapeHtml(mangaTitle)}</b>\n\n`;
       
       if (altTitles) {
@@ -293,6 +340,8 @@ console.log('🔍 Relationship Authors:', JSON.stringify(relAuthors, null, 2));
       }
       
       infoText += 
+        `<b>Author:</b> ${escapeHtml(authors)}\n` +
+        `<b>Artist:</b> ${escapeHtml(artists)}\n` +
         `<b>Chapters:</b> ${validChapters.length} (${escapeHtml(status)})\n` +
         `<b>Year:</b> ${year}\n` +
         `<b>Genres:</b> <code>${escapeHtml(genresStr)}</code>\n` +
