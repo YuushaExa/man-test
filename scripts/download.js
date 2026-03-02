@@ -116,6 +116,51 @@ function formatChapNum(num) {
   return Number(num).toString();
 }
 
+// ✨ NEW: Helper to get name in preferred language
+function getNameInLang(nameObj, preferredLang = 'en') {
+  if (!nameObj) return 'Unknown';
+  return nameObj[preferredLang] || Object.values(nameObj)[0] || 'Unknown';
+}
+
+// ✨ NEW: Helper to format alternative titles (JP and CN only)
+function formatAltTitles(altTitles, limit = 3) {
+  if (!altTitles || altTitles.length === 0) return null;
+  
+  // ✨ Filter for Japanese (ja/jp) and Chinese (zh/cn) only
+  const filtered = altTitles.filter(t => {
+    const lang = Object.keys(t)[0]?.toLowerCase();
+    return ['ja', 'jp'].includes(lang) || ['zh', 'cn', 'zh-cn', 'zh-tw'].includes(lang);
+  });
+  
+  const titles = filtered
+    .map(t => {
+      const lang = Object.keys(t)[0].toLowerCase();
+      const title = t[lang];
+      
+      // ✨ Label by language for clarity
+      if (['ja', 'jp'].includes(lang)) {
+        return `[JP] ${title}`;
+      } else if (['zh-tw'].includes(lang)) {
+        return `[CN-TW] ${title}`;
+      } else {
+        return `[CN] ${title}`;
+      }
+    })
+    .slice(0, limit); // Apply limit after filtering
+  
+  return titles.length > 0 ? titles.join(' • ') : null;
+}
+
+// ✨ NEW: Helper to format authors/artists
+function formatPeople(people, role = 'author') {
+  if (!people || people.length === 0) return 'Unknown';
+  
+  return people
+    .filter(p => p?.name)
+    .map(p => getNameInLang(p.name))
+    .join(', ') || 'Unknown';
+}
+
 async function downloadPages(pages, chapDir) {
   const downloadPage = async (pageUrl, pageIdx) => {
     const ext = pageUrl.split('.').pop().split('?')[0] || 'jpg';
@@ -202,6 +247,11 @@ async function main() {
     const status = manga.status ? manga.status.charAt(0).toUpperCase() + manga.status.slice(1) : 'Unknown';
     const year = manga.year || 'N/A';
     
+    // ✨ NEW: Extract authors, artists, and alternative titles
+    const authors = formatPeople(manga.authors, 'author');
+    const artists = formatPeople(manga.artists, 'artist');
+    const altTitles = formatAltTitles(manga.altTitles);
+    
     // 📥 Fetch cover
     console.log('📥 Fetching cover...');
     const covers = await Cover.getMangaCovers(mangaId);
@@ -250,8 +300,16 @@ async function main() {
         ? description.substring(0, 800) + '...' 
         : description;
 
-      const infoText = 
-        `<b>${escapeHtml(mangaTitle)}</b>\n\n` +
+      // ✨ NEW: Build enhanced info text with authors, artists, alt titles
+      let infoText = `<b>${escapeHtml(mangaTitle)}</b>\n\n`;
+      
+      if (altTitles) {
+        infoText += `<b>Also known as:</b> <i>${escapeHtml(altTitles)}</i>\n`;
+      }
+      
+      infoText += 
+        `<b>Author:</b> ${escapeHtml(authors)}\n` +
+        `<b>Artist:</b> ${escapeHtml(artists)}\n` +
         `<b>Chapters:</b> ${validChapters.length} (${escapeHtml(status)})\n` +
         `<b>Year:</b> ${year}\n` +
         `<b>Genres:</b> <code>${escapeHtml(genresStr)}</code>\n` +
