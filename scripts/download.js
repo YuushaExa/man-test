@@ -12,15 +12,15 @@ import sharp from 'sharp';
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
 const TELEGRAM_FILE_LIMIT = 50 * 1024 * 1024;
 const MAX_CONCURRENT_PAGES = 4;
-const MAX_MEDIA_PER_ALBUM = 10; // Telegram hard limit
 
 // ─────────────────────────────────────────────────────────────
-// 🖼️ Send multiple local photos as Telegram album(s) - BATCH SUPPORT
+// 🖼️ NEW: Send multiple local photos as Telegram album (media group)
 // ─────────────────────────────────────────────────────────────
-async function sendMediaGroupWithLocalFiles(chatId, filePaths, replyToMessageId = null, caption = null, isFirstBatch = true, batchInfo = null) {
+async function sendMediaGroupWithLocalFiles(chatId, filePaths, replyToMessageId = null, caption = null) {
   if (!process.env.TELEGRAM_BOT_TOKEN || filePaths.length === 0) return null;
   
-  const filesToSend = filePaths.slice(0, MAX_MEDIA_PER_ALBUM);
+  const MAX_MEDIA = 10; // Telegram limit per album
+  const filesToSend = filePaths.slice(0, MAX_MEDIA);
   
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
@@ -28,6 +28,7 @@ async function sendMediaGroupWithLocalFiles(chatId, filePaths, replyToMessageId 
       form.append('chat_id', chatId);
       if (replyToMessageId) form.append('reply_to_message_id', replyToMessageId);
       
+      // Build media array with attach:// references
       const media = filesToSend.map((path, idx) => {
         const attachId = `cover_${idx}`;
         const item = {
@@ -35,19 +36,16 @@ async function sendMediaGroupWithLocalFiles(chatId, filePaths, replyToMessageId 
           media: `attach://${attachId}`,
           parse_mode: 'HTML'
         };
-        // Caption ONLY on first image of FIRST batch
-        if (isFirstBatch && idx === 0 && caption) {
-          let finalCaption = caption;
-          if (batchInfo) {
-            finalCaption += `\n\n${batchInfo}`;
-          }
-          item.caption = finalCaption.substring(0, 1024);
+        // Add caption only to FIRST image in album
+        if (idx === 0 && caption) {
+          item.caption = caption.substring(0, 1024);
         }
         return item;
       });
       
       form.append('media', JSON.stringify(media));
       
+      // Attach each file with matching attachId
       for (const [idx, path] of filesToSend.entries()) {
         const attachId = `cover_${idx}`;
         form.append(attachId, await fileFromPath(path), `cover_${idx}.jpg`);
@@ -62,6 +60,7 @@ async function sendMediaGroupWithLocalFiles(chatId, filePaths, replyToMessageId 
       const data = await res.json();
       if (data.ok) return data;
       
+      // Handle rate limits
       if (data.description?.includes('Too Many Requests')) {
         const retryAfter = data.description.match(/retry after (\d+)/)?.[1] || 3;
         await new Promise(r => setTimeout(r, Math.min(retryAfter * 1000, 10000)));
@@ -78,54 +77,7 @@ async function sendMediaGroupWithLocalFiles(chatId, filePaths, replyToMessageId 
 }
 
 // ─────────────────────────────────────────────────────────────
-// 📤 Send ALL covers in batches of 10
-// ─────────────────────────────────────────────────────────────
-async function sendAllCovers(chatId, coverPaths, caption, thumbPath) {
-  if (!coverPaths.length) return null;
-  
-  let rootMessageId = null;
-  const totalBatches = Math.ceil(coverPaths.length / MAX_MEDIA_PER_ALBUM);
-  
-  for (let i = 0; i < coverPaths.length; i += MAX_MEDIA_PER_ALBUM) {
-    const batch = coverPaths.slice(i, i + MAX_MEDIA_PER_ALBUM);
-    const isFirst = (i === 0);
-    const batchNum = Math.floor(i / MAX_MEDIA_PER_ALBUM) + 1;
-    
-    console.log(`📤 Sending cover batch ${batchNum}/${totalBatches} (covers ${i + 1}-${Math.min(i + MAX_MEDIA_PER_ALBUM, coverPaths.length)})`);
-    
-    let batchInfo = null;
-    if (totalBatches > 1) {
-      batchInfo = `<i>🖼️ Album ${batchNum}/${totalBatches}</i>`;
-    }
-    
-    const result = await sendMediaGroupWithLocalFiles(
-      chatId,
-      batch,
-      isFirst ? null : rootMessageId, // Reply to first batch after initial
-      isFirst ? caption : null,       // Caption only on first batch
-      isFirst,                        // Flag for caption placement
-      batchInfo
-    );
-    
-    if (result?.ok) {
-      if (isFirst) {
-        rootMessageId = result.result[0]?.message_id;
-      }
-    } else {
-      console.warn(`⚠️ Failed to send cover batch ${batchNum}`);
-    }
-    
-    // Delay between batches to avoid rate limits
-    if (i + MAX_MEDIA_PER_ALBUM < coverPaths.length) {
-      await new Promise(r => setTimeout(r, 1500));
-    }
-  }
-  
-  return rootMessageId;
-}
-
-// ─────────────────────────────────────────────────────────────
-// 🖼️ Thumbnail creation
+// 🖼️ Thumbnail creation (unchanged)
 // ─────────────────────────────────────────────────────────────
 async function createThumbnail(sourcePath, destPath) {
   try {
@@ -141,7 +93,7 @@ async function createThumbnail(sourcePath, destPath) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 📥 Download single file with retry
+// 📥 Download single file with retry (unchanged)
 // ─────────────────────────────────────────────────────────────
 async function downloadCover(coverUrl, destPath) {
   for (let i = 0; i < 3; i++) {
@@ -159,7 +111,7 @@ async function downloadCover(coverUrl, destPath) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 📤 Send single document with thumbnail
+// 📤 Send single document with thumbnail (unchanged)
 // ─────────────────────────────────────────────────────────────
 async function sendDocumentWithThumb(chatId, filePath, fileName, caption, replyToMessageId, thumbPath) {
   if (!process.env.TELEGRAM_BOT_TOKEN) return null;
@@ -199,7 +151,7 @@ async function sendDocumentWithThumb(chatId, filePath, fileName, caption, replyT
 }
 
 // ─────────────────────────────────────────────────────────────
-// 💬 Send text message
+// 💬 Send text message (unchanged)
 // ─────────────────────────────────────────────────────────────
 async function sendText(chatId, text, replyToMessageId = null, disablePreview = true) {
   if (!process.env.TELEGRAM_BOT_TOKEN) return null;
@@ -221,7 +173,7 @@ async function sendText(chatId, text, replyToMessageId = null, disablePreview = 
 }
 
 // ─────────────────────────────────────────────────────────────
-// 🔤 HTML escape & sanitize helpers
+// 🔤 HTML escape & sanitize helpers (unchanged)
 // ─────────────────────────────────────────────────────────────
 function escapeHtml(str) {
   if (!str) return '';
@@ -243,7 +195,7 @@ function formatChapNum(num) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 🌏 Format alt titles - JP/CN only
+// 🌏 Format alt titles - JP/CN only (unchanged)
 // ─────────────────────────────────────────────────────────────
 function formatAltTitles(altTitles, limit = 3) {
   if (!altTitles || altTitles.length === 0) return null;
@@ -267,7 +219,7 @@ function formatAltTitles(altTitles, limit = 3) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 📥 Download chapter pages with concurrency
+// 📥 Download chapter pages with concurrency (unchanged)
 // ─────────────────────────────────────────────────────────────
 async function downloadPages(pages, chapDir) {
   const downloadPage = async (pageUrl, pageIdx) => {
@@ -296,7 +248,7 @@ async function downloadPages(pages, chapDir) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 🗜️ Create ZIP archive
+// 🗜️ Create ZIP archive (unchanged)
 // ─────────────────────────────────────────────────────────────
 async function createZip(sourceDir, outputPath) {
   return new Promise((resolve, reject) => {
@@ -311,7 +263,7 @@ async function createZip(sourceDir, outputPath) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 📚 Select best chapters (English priority)
+// 📚 Select best chapters (English优先) (unchanged)
 // ─────────────────────────────────────────────────────────────
 function selectChapters(allChapters, maxChapters) {
   const chapterMap = new Map();
@@ -347,10 +299,7 @@ async function main() {
   const maxChapters = parseInt(process.env.MAX_CHAPTERS || '10', 10);
   const telegramChatId = process.env.TELEGRAM_CHAT_ID;
   
-  if (!mangaInput) { 
-    console.error('❌ MANGA_INPUT not set'); 
-    process.exit(1); 
-  }
+  if (!mangaInput) { console.error('❌ MANGA_INPUT not set'); process.exit(1); }
 
   const mangaId = mangaInput.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i)?.[1] || mangaInput.trim();
   
@@ -386,16 +335,16 @@ async function main() {
     const workDir = join(process.cwd(), 'manga_download');
     mkdirSync(workDir, { recursive: true });
     
-    // Download ALL covers (no limit here)
+    // Download covers (max 10 for Telegram album)
     const coverPaths = [];
     const thumbPath = join(workDir, 'thumb.jpg');
     
-    for (let i = 0; i < validCovers.length; i++) {
+    for (let i = 0; i < Math.min(validCovers.length, 10); i++) {
       const cover = validCovers[i];
       const coverUrl = `https://uploads.mangadex.org/covers/${mangaId}/${cover.fileName}`;
       const coverPath = join(workDir, `cover_${i}.jpg`);
       
-      console.log(`📥 Downloading cover ${i + 1}/${validCovers.length}: ${cover.fileName}`);
+      console.log(`📥 Downloading cover ${i + 1}: ${cover.fileName}`);
       const result = await downloadCover(coverUrl, coverPath);
       if (result) coverPaths.push(result);
       
@@ -426,7 +375,7 @@ async function main() {
     
     const validChapters = selectChapters(allChapters, maxChapters);
     
-    // 📤 Post manga info with ALL covers (batched albums)
+    // 📤 Post manga info with cover album
     let rootMessageId = null;
     if (telegramChatId && process.env.TELEGRAM_BOT_TOKEN) {
       const genresStr = genres.length > 0 ? genres.join(', ') : 'N/A';
@@ -443,12 +392,34 @@ async function main() {
         `<b>Description</b>\n<blockquote><i>${escapeHtml(truncatedDesc)}</i></blockquote>`;
       
       if (coverPaths.length === 0) {
+        // No covers: send text only
         rootMessageId = await sendText(telegramChatId, infoText, null, false);
-        console.log('📤 Posted manga info (no covers)');
+      } else if (coverPaths.length === 1) {
+        // Single cover: use sendPhoto with caption
+        const form = new FormData();
+        form.append('chat_id', telegramChatId);
+        form.append('photo', await fileFromPath(coverPaths[0]), 'cover.jpg');
+        form.append('caption', infoText);
+        form.append('parse_mode', 'HTML');
+        
+        const res = await fetch(`${TELEGRAM_API}/sendPhoto`, { method: 'POST', body: form });
+        const data = await res.json();
+        if (data.ok) {
+          rootMessageId = data.result.message_id;
+          console.log('📤 Posted manga info with single cover');
+        }
       } else {
-        // ✨ Send ALL covers in batches
-        rootMessageId = await sendAllCovers(telegramChatId, coverPaths, infoText, thumbPath);
-        console.log(`📤 Posted ${coverPaths.length} cover(s) in ${Math.ceil(coverPaths.length/10)} album(s)`);
+        // Multiple covers: send as album with caption on first image
+        const albumResult = await sendMediaGroupWithLocalFiles(
+          telegramChatId, 
+          coverPaths, 
+          null, 
+          infoText
+        );
+        if (albumResult?.ok) {
+          rootMessageId = albumResult.result[0]?.message_id;
+          console.log('📤 Posted manga info with cover album');
+        }
       }
     }
     
@@ -458,9 +429,6 @@ async function main() {
       if (telegramChatId && process.env.TELEGRAM_BOT_TOKEN && rootMessageId) {
         await sendText(telegramChatId, '<i>No downloadable chapters found for this manga.</i>', rootMessageId);
       }
-      // Clean up cover files
-      coverPaths.forEach(path => rmSync(path, { force: true }));
-      if (thumbPath && existsSync(thumbPath)) rmSync(thumbPath, { force: true });
       rmSync(workDir, { recursive: true, force: true });
       process.exit(0);
     }
@@ -553,12 +521,7 @@ async function main() {
     }
     
     console.log('\n✅ All bundles uploaded');
-    
-    // 🧹 Final cleanup
-    coverPaths.forEach(path => rmSync(path, { force: true }));
-    if (thumbPath && existsSync(thumbPath)) rmSync(thumbPath, { force: true });
     rmSync(workDir, { recursive: true, force: true });
-    console.log('🧹 Cleaned up all temporary files');
     
   } catch (err) {
     console.error(`❌ ${err.message}`);
