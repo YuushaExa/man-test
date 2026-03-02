@@ -269,7 +269,6 @@ const escapeHtml = (text) => {
 
 const infoText = 
   `<b>${escapeHtml(mangaTitle)}</b>\n` +
-  `<b>Authors:</b> ${escapeHtml(author)}\n` +
   `<b>Chapters:</b> ${validChapters.length} (${escapeHtml(status)})\n` +
   `<b>Year:</b> ${year}\n` +
   `<b>Genres:</b> <code>${escapeHtml(genresStr)}</code>\n` +
