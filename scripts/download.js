@@ -256,13 +256,24 @@ async function main() {
     // 📤 Post manga info with cover
     let rootMessageId = null;
     if (telegramChatId && process.env.TELEGRAM_BOT_TOKEN) {
-      const genresStr = genres.length > 0 ? genres.join(', ') : 'N/A';
-      const infoText = `<b>📚 ${escapeHtml(mangaTitle)}</b>\n` +
-                      `<b>📖 Chapters:</b> ${validChapters.length}\n` +
-                      `<b>📅 Year:</b> ${year}\n` +
-                      `<b>📊 Status:</b> ${status}\n` +
-                      `<b>🏷️ Genres:</b> ${escapeHtml(genresStr)}\n` +
-                      `<b>📝 Description:</b>\n<i>${escapeHtml(description.substring(0, 800))}${description.length > 800 ? '...' : ''}</i>`;
+    const genresStr = genres.length > 0 ? genres.join(', ') : 'N/A';
+const truncatedDesc = description.length > 800 
+  ? description.substring(0, 800) + '...' 
+  : description;
+
+// Helper to safely escape HTML entities (keep this!)
+const escapeHtml = (text) => {
+  const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
+  return text.replace(/[&<>"']/g, m => map[m]);
+};
+
+const infoText = 
+  `<b>${escapeHtml(mangaTitle)}</b>\n` +
+  `<b>Authors:</b> ${escapeHtml(author)}\n` +
+  `<b>Chapters:</b> ${validChapters.length} (${escapeHtml(status)})\n` +
+  `<b>Year:</b> ${year}\n` +
+  `<b>Genres:</b> <code>${escapeHtml(genresStr)}</code>\n` +
+  `<blockquote><i>${escapeHtml(truncatedDesc)}</i></blockquote>`;
       
       if (coverPath && existsSync(coverPath)) {
         const form = new FormData();
@@ -346,14 +357,11 @@ async function main() {
       });
 
       const bundleSize = bundle.chapters.reduce((sum, c) => sum + c.size, 0);
-      console.log(`📤 Bundle ${bundleIdx + 1}/${bundles.length} (Ch.${bundleStart}-${bundleEnd}, ${(bundleSize/1024/1024).toFixed(1)} MB)`);
+      console.log(`Part ${bundleIdx + 1}/${bundles.length} (Ch.${bundleStart}-${bundleEnd}, ${(bundleSize/1024/1024).toFixed(1)} MB)`);
 
       if (rootMessageId) {
         const chapterList = bundle.chapters.map(c => `Ch.${formatChapNum(c.chapNum)}`).join(', ');
-        const caption = `📦 <b>Bundle ${bundleIdx + 1}/${bundles.length}</b>\n` +
-                       `📖 <b>Chapters:</b> ${chapterList}\n` +
-                       `📄 <b>Pages:</b> ${bundle.chapters.reduce((sum, c) => sum + c.pages, 0)}\n` +
-                       `💾 <b>Size:</b> ${(bundleSize/1024/1024).toFixed(1)} MB`;
+        const caption = `Part: ${bundleIdx + 1}/${bundles.length}` + `Chapters: ${chapterList}`;
         
         // ✅ Use thumbnail for bundle upload
         await sendDocumentWithThumb(telegramChatId, bundleZipPath, bundleZipName, caption, rootMessageId, thumbPath);
