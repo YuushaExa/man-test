@@ -116,15 +116,8 @@ function formatChapNum(num) {
   return Number(num).toString();
 }
 
-// ✨ NEW: Helper to get name in preferred language
-function getNameInLang(nameObj, preferredLang = 'en') {
-  if (!nameObj) return 'Unknown';
-  // Handle both { en: "Name" } and { attributes: { name: { en: "Name" } } } structures
-  const names = nameObj.attributes?.name || nameObj;
-  return names[preferredLang] || Object.values(names)[0] || 'Unknown';
-}
 
-// ✨ NEW: Helper to format alternative titles (JP and CN only)
+
 function formatAltTitles(altTitles, limit = 3) {
   if (!altTitles || altTitles.length === 0) return null;
   
@@ -153,24 +146,6 @@ function formatAltTitles(altTitles, limit = 3) {
   return titles.length > 0 ? titles.join(' • ') : null;
 }
 
-function formatPeople(manga, role = 'author') {
-  // Search relationships for full author/artist data
-  const people = manga.relationships?.filter(r => {
-    const isCorrectType = r.type?.toLowerCase() === role;
-    const hasName = r.attributes?.name && typeof r.attributes.name === 'object';
-    return isCorrectType && hasName;
-  }) || [];
-  
-  if (people.length === 0) return 'Unknown';
-  
-  const names = people.map(p => {
-    const nameObj = p.attributes.name;
-    // Prefer English, then Japanese, then any available language
-    return nameObj.en || nameObj.ja || nameObj['zh-cn'] || nameObj['zh'] || Object.values(nameObj)[0] || 'Unknown';
-  }).filter(n => n && n !== 'Unknown');
-  
-  return names.length > 0 ? names.join(', ') : 'Unknown';
-}
 
 async function downloadPages(pages, chapDir) {
   const downloadPage = async (pageUrl, pageIdx) => {
@@ -261,9 +236,6 @@ console.log('🔍 Relationship Authors:', JSON.stringify(relAuthors, null, 2));
     const status = manga.status ? manga.status.charAt(0).toUpperCase() + manga.status.slice(1) : 'Unknown';
     const year = manga.year || 'N/A';
     
-    // ✨ NEW: Extract authors, artists, and alternative titles
-const authors = formatPeople(manga, 'author');
-const artists = formatPeople(manga, 'artist');
     const altTitles = formatAltTitles(manga.altTitles);
     
     // 📥 Fetch cover
@@ -314,7 +286,6 @@ const artists = formatPeople(manga, 'artist');
         ? description.substring(0, 800) + '...' 
         : description;
 
-      // ✨ NEW: Build enhanced info text with authors, artists, alt titles
       let infoText = `<b>${escapeHtml(mangaTitle)}</b>\n\n`;
       
       if (altTitles) {
@@ -322,8 +293,6 @@ const artists = formatPeople(manga, 'artist');
       }
       
       infoText += 
-        `<b>Author:</b> ${escapeHtml(authors)}\n` +
-        `<b>Artist:</b> ${escapeHtml(artists)}\n` +
         `<b>Chapters:</b> ${validChapters.length} (${escapeHtml(status)})\n` +
         `<b>Year:</b> ${year}\n` +
         `<b>Genres:</b> <code>${escapeHtml(genresStr)}</code>\n` +
