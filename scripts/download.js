@@ -119,7 +119,9 @@ function formatChapNum(num) {
 // ✨ NEW: Helper to get name in preferred language
 function getNameInLang(nameObj, preferredLang = 'en') {
   if (!nameObj) return 'Unknown';
-  return nameObj[preferredLang] || Object.values(nameObj)[0] || 'Unknown';
+  // Handle both { en: "Name" } and { attributes: { name: { en: "Name" } } } structures
+  const names = nameObj.attributes?.name || nameObj;
+  return names[preferredLang] || Object.values(names)[0] || 'Unknown';
 }
 
 // ✨ NEW: Helper to format alternative titles (JP and CN only)
