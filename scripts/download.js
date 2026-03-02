@@ -152,13 +152,28 @@ function formatAltTitles(altTitles, limit = 3) {
 }
 
 // ✨ NEW: Helper to format authors/artists
-function formatPeople(people, role = 'author') {
+function formatPeople(manga, role = 'author') {
+  // Try direct authors/artists array first (mangadex-full-api style)
+  let people = manga[role + 's'];
+  
+  // Fallback: parse from relationships array (raw API style)
+  if (!people || people.length === 0) {
+    people = manga.relationships?.filter(r => 
+      r.type?.toLowerCase() === role && r.attributes?.name
+    ) || [];
+  }
+  
   if (!people || people.length === 0) return 'Unknown';
   
-  return people
-    .filter(p => p?.name)
-    .map(p => getNameInLang(p.name))
-    .join(', ') || 'Unknown';
+  const names = people
+    .map(p => {
+      // Handle both { name: {...} } and { attributes: { name: {...} } }
+      const nameObj = p.attributes?.name || p.name;
+      return getNameInLang({ name: nameObj });
+    })
+    .filter(n => n && n !== 'Unknown');
+  
+  return names.length > 0 ? names.join(', ') : 'Unknown';
 }
 
 async function downloadPages(pages, chapDir) {
@@ -248,8 +263,8 @@ async function main() {
     const year = manga.year || 'N/A';
     
     // ✨ NEW: Extract authors, artists, and alternative titles
-    const authors = formatPeople(manga.authors, 'author');
-    const artists = formatPeople(manga.artists, 'artist');
+const authors = formatPeople(manga, 'author');
+const artists = formatPeople(manga, 'artist');
     const altTitles = formatAltTitles(manga.altTitles);
     
     // 📥 Fetch cover
