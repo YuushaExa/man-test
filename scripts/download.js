@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { Manga, Chapter, Cover } from 'mangadex-full-api';
+import { Manga, Chapter, Cover, Author } from 'mangadex-full-api';
 import fetch from 'node-fetch';
 import { createWriteStream, mkdirSync, existsSync, rmSync } from 'fs';
 import { pipeline } from 'stream/promises';
@@ -223,6 +223,45 @@ function getLocalizedName(localized, lang = 'en') {
 }
 
 // ─────────────────────────────────────────────────────────────
+// ✅ NEW: Resolve author/artist IDs to names
+// ─────────────────────────────────────────────────────────────
+async function resolveRelationshipNames(relationships, type = 'author') {
+  if (!relationships || relationships.length === 0) return [];
+  
+  const names = [];
+  const idsToFetch = [];
+  
+  // Check if we already have names or just IDs
+  for (const rel of relationships) {
+    if (rel.name && typeof rel.name === 'object') {
+      // Already expanded - get the name
+      const name = getLocalizedName(rel.name);
+      if (name && name !== 'Unknown') names.push(name);
+    } else if (rel.id) {
+      // Just an ID - need to fetch
+      idsToFetch.push(rel.id);
+    }
+  }
+  
+  // Fetch missing author/artist data
+  if (idsToFetch.length > 0) {
+    console.log(`📥 Fetching ${idsToFetch.length} ${type}(s)...`);
+    const fetched = await Promise.all(
+      idsToFetch.map(id => Author.get(id).catch(() => null))
+    );
+    
+    for (const author of fetched) {
+      if (author && author.name) {
+        const name = getLocalizedName(author.name);
+        if (name && name !== 'Unknown') names.push(name);
+      }
+    }
+  }
+  
+  return names;
+}
+
+// ─────────────────────────────────────────────────────────────
 // 📥 Download chapter pages with concurrency
 // ─────────────────────────────────────────────────────────────
 async function downloadPages(pages, chapDir) {
@@ -323,14 +362,12 @@ async function main() {
     const safeTitle = sanitize(mangaTitle);
     const description = getLocalizedName(manga.description) || 'No description';
     
-    // ✅ Extract authors & artists (with expansion)
-    const authors = manga.authors
-      .map(rel => rel.name ? getLocalizedName(rel.name) : rel.id)
-      .filter(name => name && name !== 'Unknown');
+    // ✅ Resolve author & artist names (handles both expanded and ID-only)
+    console.log('📥 Resolving authors...');
+    const authors = await resolveRelationshipNames(manga.authors, 'author');
     
-    const artists = manga.artists
-      .map(rel => rel.name ? getLocalizedName(rel.name) : rel.id)
-      .filter(name => name && name !== 'Unknown');
+    console.log('📥 Resolving artists...');
+    const artists = await resolveRelationshipNames(manga.artists, 'artist');
     
     // ✅ Original language
     const originalLanguage = manga.originalLanguage?.toUpperCase() || 'N/A';
@@ -349,6 +386,9 @@ async function main() {
     const status = manga.status ? manga.status.charAt(0).toUpperCase() + manga.status.slice(1) : 'Unknown';
     const year = manga.year || 'N/A';
     const altTitles = formatAltTitles(manga.altTitles);
+    
+    console.log(`📝 Authors: ${authors.join(', ') || 'Unknown'}`);
+    console.log(`🎨 Artists: ${artists.join(', ') || 'Unknown'}`);
     
     // 📥 Fetch ALL covers from MangaDex
     console.log('📥 Fetching all covers...');
