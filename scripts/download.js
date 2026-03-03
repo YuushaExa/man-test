@@ -375,7 +375,7 @@ function selectChapters(allChapters, maxChapters) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 📤 Send manga info with covers (ALWAYS runs, even if no chapters)
+// 📤 Send manga info with covers (SUPPORTS MULTIPLE POSTS)
 // ─────────────────────────────────────────────────────────────
 async function sendMangaInfo(telegramChatId, mangaTitle, authors, artists, originalLanguage, 
                               altTitles, validChapters, status, year, genres, themes, 
@@ -396,16 +396,15 @@ async function sendMangaInfo(telegramChatId, mangaTitle, authors, artists, origi
   const themesStr = themes.length > 0 ? themes.join(', ') : null;
   
   // ✅ Truncate description to fit within caption limit
-  const maxDescLength = 300;
+  const maxDescLength = 100;
   const truncatedDesc = description.length > maxDescLength 
     ? description.substring(0, maxDescLength).replace(/[<>&"']/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c])) + '...' 
     : escapeHtml(description);
   
-  // ✅ Build caption SAFELY - check length at each step
-  const CAPTION_LIMIT = 900; // Leave buffer under 1024 limit
+  // ✅ Build caption SAFELY
+  const CAPTION_LIMIT = 900;
   let infoText = `<b>${escapeHtml(mangaTitle)}</b>\n\n`;
   
-  // Add sections one by one, checking length
   const sections = [];
   
   if (authors.length) {
@@ -444,50 +443,106 @@ async function sendMangaInfo(telegramChatId, mangaTitle, authors, artists, origi
     infoText = testText;
   }
   
-  // ✅ Final safety check - ensure no unclosed tags
   infoText = ensureClosedTags(infoText);
-  
   console.log(`📝 Caption length: ${infoText.length} characters`);
   
   let rootMessageId = null;
   
   try {
     if (coverPaths.length === 0) {
+      // ✅ No covers - send text only
       console.log('📤 No covers, sending text only...');
       rootMessageId = await sendText(telegramChatId, infoText, null, false);
-    } else if (coverPaths.length === 1) {
-      console.log('📤 Sending single cover with caption...');
-      const form = new FormData();
-      form.append('chat_id', telegramChatId);
-      form.append('photo', await fileFromPath(coverPaths[0]), 'cover.jpg');
-      form.append('caption', infoText);
-      form.append('parse_mode', 'HTML');
-      
-      const res = await fetch(`${TELEGRAM_API}/sendPhoto`, { method: 'POST', body: form });
-      const data = await res.json();
-      if (data.ok) {
-        rootMessageId = data.result?.message_id;
-        console.log('✅ Posted manga info with single cover');
+    } else if (coverPaths.length <= 10) {
+      // ✅ 1-10 covers - send single album/photo
+      if (coverPaths.length === 1) {
+        console.log('📤 Sending single cover with caption...');
+        const form = new FormData();
+        form.append('chat_id', telegramChatId);
+        form.append('photo', await fileFromPath(coverPaths[0]), 'cover.jpg');
+        form.append('caption', infoText);
+        form.append('parse_mode', 'HTML');
+        
+        const res = await fetch(`${TELEGRAM_API}/sendPhoto`, { method: 'POST', body: form });
+        const data = await res.json();
+        if (data.ok) {
+          rootMessageId = data.result?.message_id;
+          console.log('✅ Posted manga info with single cover');
+        } else {
+          console.error(`❌ sendPhoto failed: ${data.description}`);
+          rootMessageId = await sendText(telegramChatId, infoText, null, false);
+        }
       } else {
-        console.error(`❌ sendPhoto failed: ${data.description}`);
-        console.log('📤 Falling back to text message...');
-        rootMessageId = await sendText(telegramChatId, infoText, null, false);
+        console.log(`📤 Sending album with ${coverPaths.length} covers...`);
+        const albumResult = await sendMediaGroupWithLocalFiles(
+          telegramChatId, 
+          coverPaths, 
+          null, 
+          infoText
+        );
+        if (albumResult?.ok) {
+          rootMessageId = albumResult.result[0]?.message_id;
+          console.log('✅ Posted manga info with cover album');
+        } else {
+          console.error('❌ sendMediaGroup failed');
+          rootMessageId = await sendText(telegramChatId, infoText, null, false);
+        }
       }
     } else {
-      console.log('📤 Sending cover album with caption...');
-      const albumResult = await sendMediaGroupWithLocalFiles(
-        telegramChatId, 
-        coverPaths, 
-        null, 
-        infoText
-      );
-      if (albumResult?.ok) {
-        rootMessageId = albumResult.result[0]?.message_id;
-        console.log('✅ Posted manga info with cover album');
-      } else {
-        console.error('❌ sendMediaGroup failed');
-        console.log('📤 Falling back to text message...');
-        rootMessageId = await sendText(telegramChatId, infoText, null, false);
+      // ✅ 11+ covers - send MULTIPLE albums
+      console.log(`📤 Sending ${coverPaths.length} covers in multiple posts...`);
+      
+      const MAX_PER_ALBUM = 10;
+      const totalPosts = Math.ceil(coverPaths.length / MAX_PER_ALBUM);
+      
+      for (let i = 0; i < coverPaths.length; i += MAX_PER_ALBUM) {
+        const batch = coverPaths.slice(i, i + MAX_PER_ALBUM);
+        const postNum = Math.floor(i / MAX_PER_ALBUM) + 1;
+        const isLastPost = (postNum === totalPosts);
+        
+        // Caption only on first post
+        const caption = (postNum === 1) ? infoText : `<b>${escapeHtml(mangaTitle)}</b> - Part ${postNum}/${totalPosts}`;
+        
+        // Reply to first post (except first post itself)
+        const replyTo = (postNum === 1) ? null : rootMessageId;
+        
+        console.log(`📤 Sending post ${postNum}/${totalPosts} with ${batch.length} covers...`);
+        
+        let result;
+        if (batch.length === 1) {
+          const form = new FormData();
+          form.append('chat_id', telegramChatId);
+          form.append('photo', await fileFromPath(batch[0]), `cover_${i}.jpg`);
+          form.append('caption', caption);
+          form.append('parse_mode', 'HTML');
+          if (replyTo) form.append('reply_to_message_id', String(replyTo));
+          
+          const res = await fetch(`${TELEGRAM_API}/sendPhoto`, { method: 'POST', body: form });
+          result = await res.json();
+        } else {
+          result = await sendMediaGroupWithLocalFiles(
+            telegramChatId, 
+            batch, 
+            replyTo, 
+            caption
+          );
+        }
+        
+        if (result?.ok) {
+          if (postNum === 1) {
+            rootMessageId = result.result?.[0]?.message_id || result.result?.message_id;
+            console.log(`✅ Post ${postNum}/${totalPosts} sent (root message)`);
+          } else {
+            console.log(`✅ Post ${postNum}/${totalPosts} sent (reply to root)`);
+          }
+        } else {
+          console.error(`❌ Post ${postNum}/${totalPosts} failed: ${result?.description}`);
+        }
+        
+        // Rate limit protection
+        if (i + MAX_PER_ALBUM < coverPaths.length) {
+          await new Promise(r => setTimeout(r, 1000));
+        }
       }
     }
   } catch (err) {
