@@ -389,7 +389,7 @@ async function sendMangaInfo(telegramChatId, mangaTitle, authors, artists, origi
   const themesStr = themes.length > 0 ? themes.join(', ') : null;
   
   // ✅ Truncate description to fit within caption limit
-  const maxDescLength = 200;
+  const maxDescLength = 300;
   const truncatedDesc = description.length > maxDescLength 
     ? description.substring(0, maxDescLength).replace(/[<>&"']/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c])) + '...' 
     : escapeHtml(description);
