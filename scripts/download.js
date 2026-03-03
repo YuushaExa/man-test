@@ -388,43 +388,57 @@ async function sendMangaInfo(telegramChatId, mangaTitle, authors, artists, origi
   const genresStr = genres.length > 0 ? genres.join(', ') : 'N/A';
   const themesStr = themes.length > 0 ? themes.join(', ') : null;
   
-  // ✅ Truncate description to fit within 800 char caption limit
-  const maxDescLength = 150;
+  // ✅ Truncate description to fit within caption limit
+  const maxDescLength = 100;
   const truncatedDesc = description.length > maxDescLength 
-    ? description.substring(0, maxDescLength) + '...' 
-    : description;
+    ? description.substring(0, maxDescLength).replace(/[<>&"']/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c])) + '...' 
+    : escapeHtml(description);
   
-  // ✅ Build caption with 800 character limit
+  // ✅ Build caption SAFELY - check length at each step
+  const CAPTION_LIMIT = 900; // Leave buffer under 1024 limit
   let infoText = `<b>${escapeHtml(mangaTitle)}</b>\n\n`;
   
-  if (authors.length) infoText += `<b>📝 Author:</b> ${escapeHtml(authors.join(', '))}\n`;
-  if (artists.length) infoText += `<b>🎨 Artist:</b> ${escapeHtml(artists.join(', '))}\n`;
-  infoText += `<b>🌐 Original Language:</b> <code>${originalLanguage}</code>\n`;
+  // Add sections one by one, checking length
+  const sections = [];
   
-  if (altTitles) infoText += `<b>Also known as:</b> <i>${escapeHtml(altTitles)}</i>\n`;
+  if (authors.length) {
+    sections.push(`<b>📝 Author:</b> ${escapeHtml(authors.slice(0, 5).join(', '))}${authors.length > 5 ? '...' : ''}`);
+  }
+  if (artists.length) {
+    sections.push(`<b>🎨 Artist:</b> ${escapeHtml(artists.slice(0, 5).join(', '))}${artists.length > 5 ? '...' : ''}`);
+  }
+  sections.push(`<b>🌐 Original Language:</b> <code>${originalLanguage}</code>`);
   
-  infoText += 
-    `<b>📖 Chapters:</b> ${validChapters.length} (${escapeHtml(status)})\n` +
-    `<b>📅 Year:</b> ${year}\n` +
-    `<b>🏷️ Genres:</b> <code>${escapeHtml(genresStr)}</code>\n`;
+  if (altTitles) {
+    sections.push(`<b>Also known as:</b> <i>${escapeHtml(altTitles)}</i>`);
+  }
+  
+  sections.push(`<b>📖 Chapters:</b> ${validChapters.length} (${escapeHtml(status)})`);
+  sections.push(`<b>📅 Year:</b> ${year}`);
+  sections.push(`<b>🏷️ Genres:</b> <code>${escapeHtml(genresStr)}</code>`);
   
   if (themesStr) {
-    infoText += `<b>✨ Themes:</b> <code>${escapeHtml(themesStr)}</code>\n`;
+    sections.push(`<b>✨ Themes:</b> <code>${escapeHtml(themesStr)}</code>`);
   }
   
-  infoText += `\n<b>📄 Description</b>\n<blockquote><i>${escapeHtml(truncatedDesc)}</i></blockquote>`;
+  sections.push(`<b>📄 Description</b>\n<blockquote><i>${truncatedDesc}</i></blockquote>`);
   
-  // Add note if no chapters available
   if (validChapters.length === 0) {
-    infoText += `\n\n⚠️ <i>No downloadable chapters available</i>`;
+    sections.push(`⚠️ <i>No downloadable chapters available</i>`);
   }
   
-  // ✅ Ensure caption doesn't exceed 800 characters (Telegram limit is 1024)
-  const CAPTION_LIMIT = 800;
-  if (infoText.length > CAPTION_LIMIT) {
-    console.log(`⚠️ Caption too long (${infoText.length} chars), truncating to ${CAPTION_LIMIT}...`);
-    infoText = infoText.substring(0, CAPTION_LIMIT - 3) + '...';
+  // ✅ Build caption with length checking
+  for (const section of sections) {
+    const testText = infoText + section + '\n';
+    if (testText.length > CAPTION_LIMIT) {
+      console.log(`⚠️ Stopped adding sections at ${infoText.length} chars (limit: ${CAPTION_LIMIT})`);
+      break;
+    }
+    infoText = testText;
   }
+  
+  // ✅ Final safety check - ensure no unclosed tags
+  infoText = ensureClosedTags(infoText);
   
   console.log(`📝 Caption length: ${infoText.length} characters`);
   
@@ -449,7 +463,6 @@ async function sendMangaInfo(telegramChatId, mangaTitle, authors, artists, origi
         console.log('✅ Posted manga info with single cover');
       } else {
         console.error(`❌ sendPhoto failed: ${data.description}`);
-        // Fallback to text message (no caption limit)
         console.log('📤 Falling back to text message...');
         rootMessageId = await sendText(telegramChatId, infoText, null, false);
       }
@@ -466,14 +479,12 @@ async function sendMangaInfo(telegramChatId, mangaTitle, authors, artists, origi
         console.log('✅ Posted manga info with cover album');
       } else {
         console.error('❌ sendMediaGroup failed');
-        // Fallback to text message
         console.log('📤 Falling back to text message...');
         rootMessageId = await sendText(telegramChatId, infoText, null, false);
       }
     }
   } catch (err) {
     console.error(`❌ Error sending manga info: ${err.message}`);
-    // Last resort fallback
     rootMessageId = await sendText(telegramChatId, infoText, null, false);
   }
   
@@ -486,6 +497,36 @@ async function sendMangaInfo(telegramChatId, mangaTitle, authors, artists, origi
   console.log('📤 === END MANGA INFO ===\n');
   
   return rootMessageId;
+}
+
+// ─────────────────────────────────────────────────────────────
+// 🔒 Ensure all HTML tags are properly closed
+// ─────────────────────────────────────────────────────────────
+function ensureClosedTags(text) {
+  // Simple check for common Telegram HTML tags
+  const tagPairs = [
+    ['<b>', '</b>'],
+    ['<i>', '</i>'],
+    ['<code>', '</code>'],
+    ['<blockquote>', '</blockquote>'],
+    ['<pre>', '</pre>'],
+    ['<a>', '</a>'],
+    ['<s>', '</s>'],
+    ['<u>', '</u>'],
+    ['<span>', '</span>'],
+  ];
+  
+  for (const [openTag, closeTag] of tagPairs) {
+    const openCount = (text.match(new RegExp(openTag.replace(/[<>]/g, '\\$&'), 'g')) || []).length;
+    const closeCount = (text.match(new RegExp(closeTag.replace(/[<>]/g, '\\$&'), 'g')) || []).length;
+    
+    // Add missing closing tags
+    for (let i = 0; i < openCount - closeCount; i++) {
+      text += closeTag;
+    }
+  }
+  
+  return text;
 }
 
 // ─────────────────────────────────────────────────────────────
