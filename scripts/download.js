@@ -588,79 +588,103 @@ async function main() {
     
     console.log(`📝 Authors: ${authors.join(', ') || 'Unknown'}`);
     console.log(`🎨 Artists: ${artists.join(', ') || 'Unknown'}`);
-    
     // 📥 Fetch ALL covers from MangaDex
-    console.log('📥 Fetching all covers...');
-    const allCovers = await Cover.getMangaCovers(mangaId);
-    
-    // ✅ Skip main cover (volume === null), only get volume covers
-    const seenFileNames = new Set();
-    const volumeCovers = allCovers
-      .filter(c => c?.fileName && c.volume !== null)
-      .filter(c => {
-        if (seenFileNames.has(c.fileName)) {
-          console.log(`⚠️ Skipping duplicate fileName: ${c.fileName}`);
-          return false;
-        }
-        seenFileNames.add(c.fileName);
-        return true;
-      })
-      .sort((a, b) => {
-        return parseFloat(a.volume) - parseFloat(b.volume);
-      });
-    
-    console.log(`📥 Found ${volumeCovers.length} volume cover(s) (main cover skipped)`);
-    
-    volumeCovers.forEach((c, i) => {
-      console.log(`  Cover ${i + 1}: ${c.fileName} (volume: ${c.volume})`);
+console.log('📥 Fetching all covers...');
+const allCovers = await Cover.getMangaCovers(mangaId);
+
+// ✅ First: Try to get volume covers (skip main)
+const seenFileNames = new Set();
+let volumeCovers = allCovers
+  .filter(c => c?.fileName && c.volume !== null)
+  .filter(c => {
+    if (seenFileNames.has(c.fileName)) {
+      console.log(`⚠️ Skipping duplicate fileName: ${c.fileName}`);
+      return false;
+    }
+    seenFileNames.add(c.fileName);
+    return true;
+  })
+  .sort((a, b) => {
+    return parseFloat(a.volume) - parseFloat(b.volume);
+  });
+
+console.log(`📥 Found ${volumeCovers.length} volume cover(s)`);
+
+// ✅ FALLBACK: If no volume covers, use main cover
+let usingMainCover = false;
+if (volumeCovers.length === 0) {
+  console.log('⚠️ No volume covers found, falling back to main cover...');
+  
+  const mainCovers = allCovers
+    .filter(c => c?.fileName && c.volume === null)
+    .filter(c => {
+      if (seenFileNames.has(c.fileName)) {
+        return false;
+      }
+      seenFileNames.add(c.fileName);
+      return true;
     });
-    
-    const workDir = join(process.cwd(), 'manga_download');
-    mkdirSync(workDir, { recursive: true });
-    
-    // Download covers with hash-based deduplication
-    const coverPaths = [];
-    const seenHashes = new Set();
-    const thumbPath = join(workDir, 'thumb.jpg');
-    
-    const maxCoversToDownload = Math.min(volumeCovers.length, 10);
-    
-    for (let i = 0; i < maxCoversToDownload; i++) {
-      const cover = volumeCovers[i];
-      const coverUrl = `https://uploads.mangadex.org/covers/${mangaId}/${cover.fileName}`;
-      const coverPath = join(workDir, `cover_${i}.jpg`);
+  
+  if (mainCovers.length > 0) {
+    volumeCovers = mainCovers;
+    usingMainCover = true;
+    console.log(`✅ Found ${mainCovers.length} main cover(s) as fallback`);
+  } else {
+    console.warn('⚠️ No covers found at all (neither volume nor main)');
+  }
+}
+
+// Log cover details
+volumeCovers.forEach((c, i) => {
+  console.log(`  Cover ${i + 1}: ${c.fileName} (volume: ${c.volume || 'main'})`);
+});
+
+const workDir = join(process.cwd(), 'manga_download');
+mkdirSync(workDir, { recursive: true });
+
+// Download covers with hash-based deduplication
+const coverPaths = [];
+const seenHashes = new Set();
+const thumbPath = join(workDir, 'thumb.jpg');
+
+const maxCoversToDownload = Math.min(volumeCovers.length, 10);
+
+for (let i = 0; i < maxCoversToDownload; i++) {
+  const cover = volumeCovers[i];
+  const coverUrl = `https://uploads.mangadex.org/covers/${mangaId}/${cover.fileName}`;
+  const coverPath = join(workDir, `cover_${i}.jpg`);
+  
+  console.log(`📥 Downloading cover ${i + 1}/${maxCoversToDownload}: ${cover.fileName}`);
+  const result = await downloadCover(coverUrl, coverPath);
+  
+  if (result) {
+    const stats = statSync(result);
+    if (stats.size > 1000) {
+      const hash = await getFileHash(result);
       
-      console.log(`📥 Downloading cover ${i + 1}/${maxCoversToDownload}: ${cover.fileName}`);
-      const result = await downloadCover(coverUrl, coverPath);
-      
-      if (result) {
-        const stats = statSync(result);
-        if (stats.size > 1000) {
-          const hash = await getFileHash(result);
-          
-          if (seenHashes.has(hash)) {
-            console.warn(`  ⚠️ Duplicate image detected (hash: ${hash.substring(0, 8)}...), skipping`);
-            rmSync(result, { force: true });
-          } else {
-            seenHashes.add(hash);
-            coverPaths.push(result);
-            console.log(`  ✅ Downloaded (${(stats.size / 1024).toFixed(1)} KB, hash: ${hash.substring(0, 8)}...)`);
-            
-            if (coverPaths.length === 1) {
-              console.log('🖼️ Creating thumbnail...');
-              await createThumbnail(result, thumbPath);
-            }
-          }
-        } else {
-          console.warn(`  ⚠️ File too small, skipping: ${result}`);
-          rmSync(result, { force: true });
+      if (seenHashes.has(hash)) {
+        console.warn(`  ⚠️ Duplicate image detected (hash: ${hash.substring(0, 8)}...), skipping`);
+        rmSync(result, { force: true });
+      } else {
+        seenHashes.add(hash);
+        coverPaths.push(result);
+        console.log(`  ✅ Downloaded (${(stats.size / 1024).toFixed(1)} KB, hash: ${hash.substring(0, 8)}...)`);
+        
+        if (coverPaths.length === 1) {
+          console.log('🖼️ Creating thumbnail...');
+          await createThumbnail(result, thumbPath);
         }
       }
-      
-      await new Promise(r => setTimeout(r, 150));
+    } else {
+      console.warn(`  ⚠️ File too small, skipping: ${result}`);
+      rmSync(result, { force: true });
     }
-    
-    console.log(`📊 Total unique covers downloaded: ${coverPaths.length}`);
+  }
+  
+  await new Promise(r => setTimeout(r, 150));
+}
+
+console.log(`📊 Total unique covers downloaded: ${coverPaths.length}`);
     
     // Fetch chapters
     const allChapters = [];
