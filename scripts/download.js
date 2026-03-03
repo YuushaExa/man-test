@@ -8,6 +8,7 @@ import { join } from 'path';
 import { FormData } from 'formdata-node';
 import { fileFromPath } from 'formdata-node/file-from-path';
 import sharp from 'sharp';
+import { createHash } from 'crypto';
 
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
 const TELEGRAM_FILE_LIMIT = 50 * 1024 * 1024;
@@ -109,6 +110,15 @@ async function downloadCover(coverUrl, destPath) {
       await new Promise(r => setTimeout(r, 300));
     }
   }
+}
+
+// ─────────────────────────────────────────────────────────────
+// 🔐 Calculate file hash for deduplication
+// ─────────────────────────────────────────────────────────────
+async function getFileHash(filePath) {
+  const { readFile } = await import('fs/promises');
+  const data = await readFile(filePath);
+  return createHash('md5').update(data).digest('hex');
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -400,48 +410,40 @@ async function main() {
     
     // ✅ FIXED: Skip main cover (volume === null), only get volume covers
     const seenFileNames = new Set();
-    const validCovers = allCovers
-      .filter(c => c?.fileName)
+    const volumeCovers = allCovers
+      .filter(c => c?.fileName && c.volume !== null)  // ⚠️ SKIP MAIN COVER
       .filter(c => {
-        // ✅ SKIP main cover (volume === null means main/primary cover)
-        if (c.volume === null) {
-          console.log(`⚠️ Skipping main cover: ${c.fileName}`);
-          return false;
-        }
-        // Skip duplicates
         if (seenFileNames.has(c.fileName)) {
-          console.log(`⚠️ Skipping duplicate cover: ${c.fileName}`);
+          console.log(`⚠️ Skipping duplicate fileName: ${c.fileName}`);
           return false;
         }
         seenFileNames.add(c.fileName);
         return true;
       })
       .sort((a, b) => {
-        // Sort by volume number
-        if (a.volume !== null && b.volume !== null) {
-          return parseFloat(a.volume) - parseFloat(b.volume);
-        }
-        return 0;
+        // Sort by volume number ascending
+        return parseFloat(a.volume) - parseFloat(b.volume);
       });
     
-    console.log(`📥 Found ${validCovers.length} unique volume cover(s)`);
+    console.log(`📥 Found ${volumeCovers.length} volume cover(s) (main cover skipped)`);
     
     // Debug: Log cover details
-    validCovers.forEach((c, i) => {
+    volumeCovers.forEach((c, i) => {
       console.log(`  Cover ${i + 1}: ${c.fileName} (volume: ${c.volume})`);
     });
     
     const workDir = join(process.cwd(), 'manga_download');
     mkdirSync(workDir, { recursive: true });
     
-    // Download covers (max 10 for Telegram album)
+    // Download covers with hash-based deduplication
     const coverPaths = [];
+    const seenHashes = new Set();  // ✅ Track file hashes to catch same-image-different-filename
     const thumbPath = join(workDir, 'thumb.jpg');
     
-    const maxCoversToDownload = Math.min(validCovers.length, 10);
+    const maxCoversToDownload = Math.min(volumeCovers.length, 10);
     
     for (let i = 0; i < maxCoversToDownload; i++) {
-      const cover = validCovers[i];
+      const cover = volumeCovers[i];
       const coverUrl = `https://uploads.mangadex.org/covers/${mangaId}/${cover.fileName}`;
       const coverPath = join(workDir, `cover_${i}.jpg`);
       
@@ -451,23 +453,33 @@ async function main() {
       if (result) {
         const stats = statSync(result);
         if (stats.size > 1000) {
-          coverPaths.push(result);
-          console.log(`  ✅ Downloaded (${(stats.size / 1024).toFixed(1)} KB)`);
+          // ✅ Calculate hash to detect duplicate images
+          const hash = await getFileHash(result);
+          
+          if (seenHashes.has(hash)) {
+            console.warn(`  ⚠️ Duplicate image detected (hash: ${hash.substring(0, 8)}...), skipping`);
+            rmSync(result, { force: true });
+          } else {
+            seenHashes.add(hash);
+            coverPaths.push(result);
+            console.log(`  ✅ Downloaded (${(stats.size / 1024).toFixed(1)} KB, hash: ${hash.substring(0, 8)}...)`);
+            
+            // Create thumbnail from first unique cover
+            if (coverPaths.length === 1) {
+              console.log('🖼️ Creating thumbnail...');
+              await createThumbnail(result, thumbPath);
+            }
+          }
         } else {
           console.warn(`  ⚠️ File too small, skipping: ${result}`);
+          rmSync(result, { force: true });
         }
-      }
-      
-      // Create thumbnail from FIRST volume cover
-      if (i === 0 && result) {
-        console.log('🖼️ Creating thumbnail...');
-        await createThumbnail(result, thumbPath);
       }
       
       await new Promise(r => setTimeout(r, 150));
     }
     
-    console.log(`📊 Total volume covers downloaded: ${coverPaths.length}`);
+    console.log(`📊 Total unique covers downloaded: ${coverPaths.length}`);
     
     // Fetch chapters
     const allChapters = [];
@@ -544,14 +556,13 @@ async function main() {
       }
     }
     
-    // ✅ FIXED: Even if no chapters, we already posted info - just exit gracefully
     if (validChapters.length === 0) { 
-      console.warn('⚠️ No chapters found - manga info was posted, exiting...');
+      console.warn('⚠️ No chapters found, but manga info was posted');
       if (telegramChatId && process.env.TELEGRAM_BOT_TOKEN && rootMessageId) {
-        await sendText(telegramChatId, '<i>No downloadable chapters available for this manga.</i>', rootMessageId);
+        await sendText(telegramChatId, '<i>No downloadable chapters found for this manga.</i>', rootMessageId);
       }
       rmSync(workDir, { recursive: true, force: true });
-      process.exit(0); // ✅ Exit successfully, not as error
+      process.exit(0);
     }
     
     console.log(`✅ ${validChapters.length} chapters selected`);
