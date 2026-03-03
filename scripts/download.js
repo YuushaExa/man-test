@@ -18,7 +18,10 @@ const MAX_CONCURRENT_PAGES = 4;
 // 🖼️ Send multiple local photos as Telegram album (media group)
 // ─────────────────────────────────────────────────────────────
 async function sendMediaGroupWithLocalFiles(chatId, filePaths, replyToMessageId = null, caption = null) {
-  if (!process.env.TELEGRAM_BOT_TOKEN || filePaths.length === 0) return null;
+  if (!process.env.TELEGRAM_BOT_TOKEN || filePaths.length === 0) {
+    console.warn('⚠️ Cannot send album: missing token or no files');
+    return null;
+  }
   
   const MAX_MEDIA = 10;
   const filesToSend = filePaths.slice(0, MAX_MEDIA);
@@ -62,6 +65,8 @@ async function sendMediaGroupWithLocalFiles(chatId, filePaths, replyToMessageId 
         console.log('✅ Album sent successfully');
         return data;
       }
+      
+      console.warn(`⚠️ Telegram API error: ${data.description}`);
       
       if (data.description?.includes('Too Many Requests')) {
         const retryAfter = data.description.match(/retry after (\d+)/)?.[1] || 3;
@@ -165,7 +170,10 @@ async function sendDocumentWithThumb(chatId, filePath, fileName, caption, replyT
 // 💬 Send text message
 // ─────────────────────────────────────────────────────────────
 async function sendText(chatId, text, replyToMessageId = null, disablePreview = true) {
-  if (!process.env.TELEGRAM_BOT_TOKEN) return null;
+  if (!process.env.TELEGRAM_BOT_TOKEN) {
+    console.warn('⚠️ Cannot send text: missing bot token');
+    return null;
+  }
   try {
     const res = await fetch(`${TELEGRAM_API}/sendMessage`, {
       method: 'POST',
@@ -179,8 +187,16 @@ async function sendText(chatId, text, replyToMessageId = null, disablePreview = 
       })
     });
     const data = await res.json();
-    return data.ok ? data.result?.message_id : null;
-  } catch { return null; }
+    if (data.ok) {
+      console.log('✅ Text message sent successfully');
+      return data.result?.message_id;
+    }
+    console.warn(`⚠️ Telegram API error: ${data.description}`);
+    return null;
+  } catch (err) {
+    console.warn(`⚠️ sendText failed: ${err.message}`);
+    return null;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -357,10 +373,15 @@ function selectChapters(allChapters, maxChapters) {
 async function sendMangaInfo(telegramChatId, mangaTitle, authors, artists, originalLanguage, 
                               altTitles, validChapters, status, year, genres, themes, 
                               description, coverPaths) {
-  let rootMessageId = null;
+  console.log('\n📤 === SENDING MANGA INFO TO TELEGRAM ===');
   
-  if (!telegramChatId || !process.env.TELEGRAM_BOT_TOKEN) {
-    console.log('⚠️ Telegram not configured, skipping info post');
+  if (!telegramChatId) {
+    console.error('❌ TELEGRAM_CHAT_ID not set');
+    return null;
+  }
+  
+  if (!process.env.TELEGRAM_BOT_TOKEN) {
+    console.error('❌ TELEGRAM_BOT_TOKEN not set');
     return null;
   }
   
@@ -394,33 +415,60 @@ async function sendMangaInfo(telegramChatId, mangaTitle, authors, artists, origi
     infoText += `\n\n⚠️ <i>No downloadable chapters available</i>`;
   }
   
-  if (coverPaths.length === 0) {
+  let rootMessageId = null;
+  
+  try {
+    if (coverPaths.length === 0) {
+      console.log('📤 No covers, sending text only...');
+      rootMessageId = await sendText(telegramChatId, infoText, null, false);
+    } else if (coverPaths.length === 1) {
+      console.log('📤 Sending single cover with caption...');
+      const form = new FormData();
+      form.append('chat_id', telegramChatId);
+      form.append('photo', await fileFromPath(coverPaths[0]), 'cover.jpg');
+      form.append('caption', infoText);
+      form.append('parse_mode', 'HTML');
+      
+      const res = await fetch(`${TELEGRAM_API}/sendPhoto`, { method: 'POST', body: form });
+      const data = await res.json();
+      if (data.ok) {
+        rootMessageId = data.result?.message_id;
+        console.log('✅ Posted manga info with single cover');
+      } else {
+        console.error(`❌ sendPhoto failed: ${data.description}`);
+        // Fallback to text
+        rootMessageId = await sendText(telegramChatId, infoText, null, false);
+      }
+    } else {
+      console.log('📤 Sending cover album with caption...');
+      const albumResult = await sendMediaGroupWithLocalFiles(
+        telegramChatId, 
+        coverPaths, 
+        null, 
+        infoText
+      );
+      if (albumResult?.ok) {
+        rootMessageId = albumResult.result[0]?.message_id;
+        console.log('✅ Posted manga info with cover album');
+      } else {
+        console.error('❌ sendMediaGroup failed');
+        // Fallback to text
+        rootMessageId = await sendText(telegramChatId, infoText, null, false);
+      }
+    }
+  } catch (err) {
+    console.error(`❌ Error sending manga info: ${err.message}`);
+    // Last resort fallback
     rootMessageId = await sendText(telegramChatId, infoText, null, false);
-  } else if (coverPaths.length === 1) {
-    const form = new FormData();
-    form.append('chat_id', telegramChatId);
-    form.append('photo', await fileFromPath(coverPaths[0]), 'cover.jpg');
-    form.append('caption', infoText);
-    form.append('parse_mode', 'HTML');
-    
-    const res = await fetch(`${TELEGRAM_API}/sendPhoto`, { method: 'POST', body: form });
-    const data = await res.json();
-    if (data.ok) {
-      rootMessageId = data.result?.message_id;
-      console.log('📤 Posted manga info with single cover');
-    }
-  } else {
-    const albumResult = await sendMediaGroupWithLocalFiles(
-      telegramChatId, 
-      coverPaths, 
-      null, 
-      infoText
-    );
-    if (albumResult?.ok) {
-      rootMessageId = albumResult.result[0]?.message_id;
-      console.log('📤 Posted manga info with cover album');
-    }
   }
+  
+  if (rootMessageId) {
+    console.log(`✅ Manga info sent successfully (message_id: ${rootMessageId})`);
+  } else {
+    console.error('❌ Failed to send manga info');
+  }
+  
+  console.log('📤 === END MANGA INFO ===\n');
   
   return rootMessageId;
 }
@@ -570,7 +618,8 @@ async function main() {
     const validChapters = selectChapters(allChapters, maxChapters);
     console.log(`✅ ${validChapters.length} chapters selected`);
     
-    // ✅ ALWAYS send manga info + cover album (even if no chapters)
+    // ✅ ALWAYS send manga info + cover album FIRST (before chapter check)
+    console.log('\n📢 === SENDING MANGA INFO (BEFORE CHAPTER CHECK) ===');
     const rootMessageId = await sendMangaInfo(
       telegramChatId,
       mangaTitle,
@@ -589,12 +638,15 @@ async function main() {
     
     // ⚠️ If no chapters, stop here (info already sent)
     if (validChapters.length === 0) { 
-      console.warn('⚠️ No chapters found, manga info was posted');
+      console.warn('\n⚠️ No chapters found, but manga info WAS posted');
+      console.log('🧹 Cleaning up temporary files...');
       rmSync(workDir, { recursive: true, force: true });
+      console.log('✅ Done!');
       process.exit(0);
     }
     
     // Continue with chapter downloads if chapters exist
+    console.log('\n📚 === PROCESSING CHAPTERS ===');
     const mangaDir = join(workDir, 'chapters');
     const bundleDir = join(workDir, 'bundles');
     mkdirSync(mangaDir, { recursive: true });
