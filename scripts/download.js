@@ -605,7 +605,7 @@ async function main() {
   const mangaId = mangaInput.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i)?.[1] || mangaInput.trim();
   
   console.log(`📚 Manga ID: ${mangaId}`);
-
+let allCovers = [];
   try {
     const manga = await Manga.get(mangaId, {
       authors: true,
