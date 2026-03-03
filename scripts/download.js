@@ -215,15 +215,20 @@ function formatAltTitles(altTitles, limit = 3) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 🌐 Get localized name helper
+// 🌐 Get localized name (for Manga titles, descriptions, etc.)
 // ─────────────────────────────────────────────────────────────
 function getLocalizedName(localized, lang = 'en') {
   if (!localized) return 'Unknown';
-  return localized[lang] || localized['en'] || Object.values(localized)[0] || 'Unknown';
+  // LocalizedString is an object like { en: "Title", ja: "タイトル" }
+  if (typeof localized === 'object') {
+    return localized[lang] || localized['en'] || Object.values(localized)[0] || 'Unknown';
+  }
+  // Plain string (like Author.name)
+  return localized || 'Unknown';
 }
 
 // ─────────────────────────────────────────────────────────────
-// ✅ NEW: Resolve author/artist IDs to names
+// ✅ FIXED: Resolve author/artist IDs to names
 // ─────────────────────────────────────────────────────────────
 async function resolveRelationshipNames(relationships, type = 'author') {
   if (!relationships || relationships.length === 0) return [];
@@ -231,14 +236,16 @@ async function resolveRelationshipNames(relationships, type = 'author') {
   const names = [];
   const idsToFetch = [];
   
-  // Check if we already have names or just IDs
   for (const rel of relationships) {
-    if (rel.name && typeof rel.name === 'object') {
-      // Already expanded - get the name
-      const name = getLocalizedName(rel.name);
-      if (name && name !== 'Unknown') names.push(name);
+    // Check if relationship is already expanded with attributes
+    if (rel.attributes && rel.attributes.name) {
+      // Author.name is a PLAIN STRING, not LocalizedString
+      const name = rel.attributes.name;
+      if (name && name.trim()) {
+        names.push(name.trim());
+      }
     } else if (rel.id) {
-      // Just an ID - need to fetch
+      // Just an ID - need to fetch full Author object
       idsToFetch.push(rel.id);
     }
   }
@@ -252,13 +259,17 @@ async function resolveRelationshipNames(relationships, type = 'author') {
     
     for (const author of fetched) {
       if (author && author.name) {
-        const name = getLocalizedName(author.name);
-        if (name && name !== 'Unknown') names.push(name);
+        // Author.name is a PLAIN STRING
+        const name = author.name.trim();
+        if (name && name !== 'Unknown') {
+          names.push(name);
+        }
       }
     }
   }
   
-  return names;
+  // Remove duplicates
+  return [...new Set(names)];
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -362,7 +373,7 @@ async function main() {
     const safeTitle = sanitize(mangaTitle);
     const description = getLocalizedName(manga.description) || 'No description';
     
-    // ✅ Resolve author & artist names (handles both expanded and ID-only)
+    // ✅ Resolve author & artist names
     console.log('📥 Resolving authors...');
     const authors = await resolveRelationshipNames(manga.authors, 'author');
     
