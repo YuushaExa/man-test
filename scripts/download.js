@@ -387,10 +387,14 @@ async function sendMangaInfo(telegramChatId, mangaTitle, authors, artists, origi
   
   const genresStr = genres.length > 0 ? genres.join(', ') : 'N/A';
   const themesStr = themes.length > 0 ? themes.join(', ') : null;
-  const truncatedDesc = description.length > 800 
-    ? description.substring(0, 800) + '...' 
+  
+  // ✅ Truncate description to fit within 800 char caption limit
+  const maxDescLength = 150;
+  const truncatedDesc = description.length > maxDescLength 
+    ? description.substring(0, maxDescLength) + '...' 
     : description;
   
+  // ✅ Build caption with 800 character limit
   let infoText = `<b>${escapeHtml(mangaTitle)}</b>\n\n`;
   
   if (authors.length) infoText += `<b>📝 Author:</b> ${escapeHtml(authors.join(', '))}\n`;
@@ -415,6 +419,15 @@ async function sendMangaInfo(telegramChatId, mangaTitle, authors, artists, origi
     infoText += `\n\n⚠️ <i>No downloadable chapters available</i>`;
   }
   
+  // ✅ Ensure caption doesn't exceed 800 characters (Telegram limit is 1024)
+  const CAPTION_LIMIT = 800;
+  if (infoText.length > CAPTION_LIMIT) {
+    console.log(`⚠️ Caption too long (${infoText.length} chars), truncating to ${CAPTION_LIMIT}...`);
+    infoText = infoText.substring(0, CAPTION_LIMIT - 3) + '...';
+  }
+  
+  console.log(`📝 Caption length: ${infoText.length} characters`);
+  
   let rootMessageId = null;
   
   try {
@@ -436,7 +449,8 @@ async function sendMangaInfo(telegramChatId, mangaTitle, authors, artists, origi
         console.log('✅ Posted manga info with single cover');
       } else {
         console.error(`❌ sendPhoto failed: ${data.description}`);
-        // Fallback to text
+        // Fallback to text message (no caption limit)
+        console.log('📤 Falling back to text message...');
         rootMessageId = await sendText(telegramChatId, infoText, null, false);
       }
     } else {
@@ -452,7 +466,8 @@ async function sendMangaInfo(telegramChatId, mangaTitle, authors, artists, origi
         console.log('✅ Posted manga info with cover album');
       } else {
         console.error('❌ sendMediaGroup failed');
-        // Fallback to text
+        // Fallback to text message
+        console.log('📤 Falling back to text message...');
         rootMessageId = await sendText(telegramChatId, infoText, null, false);
       }
     }
