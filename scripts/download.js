@@ -299,6 +299,13 @@ async function resolveRelationshipNames(relationships, type = 'author') {
 // 📥 Download chapter pages with concurrency
 // ─────────────────────────────────────────────────────────────
 async function downloadPages(pages, chapDir) {
+
+  console.log(`📥 Downloading ${pages.length} pages...`);
+  console.log(`🔗 Sample URLs:`);
+  pages.slice(0, 3).forEach((url, i) => {
+    console.log(`   Page ${i + 1}: ${url.substring(0, 100)}...`);
+  });
+  
   const downloadPage = async (pageUrl, pageIdx) => {
     const ext = pageUrl.split('.').pop()?.split('?')[0] || 'jpg';
     const filename = `${String(pageIdx + 1).padStart(3, '0')}.${ext}`;
