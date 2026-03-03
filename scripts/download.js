@@ -1,14 +1,13 @@
 #!/usr/bin/env node
 import { Manga, Chapter, Cover, Author } from 'mangadex-full-api';
 import fetch from 'node-fetch';
-import { createWriteStream, mkdirSync, existsSync, rmSync, statSync } from 'fs';
+import { createWriteStream, mkdirSync, existsSync, rmSync } from 'fs';
 import { pipeline } from 'stream/promises';
 import archiver from 'archiver';
 import { join } from 'path';
 import { FormData } from 'formdata-node';
 import { fileFromPath } from 'formdata-node/file-from-path';
 import sharp from 'sharp';
-import { createHash } from 'crypto';
 
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
 const TELEGRAM_FILE_LIMIT = 50 * 1024 * 1024;
@@ -22,8 +21,6 @@ async function sendMediaGroupWithLocalFiles(chatId, filePaths, replyToMessageId 
   
   const MAX_MEDIA = 10;
   const filesToSend = filePaths.slice(0, MAX_MEDIA);
-  
-  console.log(`📤 Sending ${filesToSend.length} images as album...`);
   
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
@@ -58,10 +55,7 @@ async function sendMediaGroupWithLocalFiles(chatId, filePaths, replyToMessageId 
       });
       
       const data = await res.json();
-      if (data.ok) {
-        console.log('✅ Album sent successfully');
-        return data;
-      }
+      if (data.ok) return data;
       
       if (data.description?.includes('Too Many Requests')) {
         const retryAfter = data.description.match(/retry after (\d+)/)?.[1] || 3;
@@ -110,15 +104,6 @@ async function downloadCover(coverUrl, destPath) {
       await new Promise(r => setTimeout(r, 300));
     }
   }
-}
-
-// ─────────────────────────────────────────────────────────────
-// 🔐 Calculate file hash for deduplication
-// ─────────────────────────────────────────────────────────────
-async function getFileHash(filePath) {
-  const { readFile } = await import('fs/promises');
-  const data = await readFile(filePath);
-  return createHash('md5').update(data).digest('hex');
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -234,14 +219,16 @@ function formatAltTitles(altTitles, limit = 3) {
 // ─────────────────────────────────────────────────────────────
 function getLocalizedName(localized, lang = 'en') {
   if (!localized) return 'Unknown';
+  // LocalizedString is an object like { en: "Title", ja: "タイトル" }
   if (typeof localized === 'object') {
     return localized[lang] || localized['en'] || Object.values(localized)[0] || 'Unknown';
   }
+  // Plain string (like Author.name)
   return localized || 'Unknown';
 }
 
 // ─────────────────────────────────────────────────────────────
-// ✅ Resolve author/artist IDs to names
+// ✅ FIXED: Resolve author/artist IDs to names
 // ─────────────────────────────────────────────────────────────
 async function resolveRelationshipNames(relationships, type = 'author') {
   if (!relationships || relationships.length === 0) return [];
@@ -250,16 +237,20 @@ async function resolveRelationshipNames(relationships, type = 'author') {
   const idsToFetch = [];
   
   for (const rel of relationships) {
+    // Check if relationship is already expanded with attributes
     if (rel.attributes && rel.attributes.name) {
+      // Author.name is a PLAIN STRING, not LocalizedString
       const name = rel.attributes.name;
       if (name && name.trim()) {
         names.push(name.trim());
       }
     } else if (rel.id) {
+      // Just an ID - need to fetch full Author object
       idsToFetch.push(rel.id);
     }
   }
   
+  // Fetch missing author/artist data
   if (idsToFetch.length > 0) {
     console.log(`📥 Fetching ${idsToFetch.length} ${type}(s)...`);
     const fetched = await Promise.all(
@@ -268,6 +259,7 @@ async function resolveRelationshipNames(relationships, type = 'author') {
     
     for (const author of fetched) {
       if (author && author.name) {
+        // Author.name is a PLAIN STRING
         const name = author.name.trim();
         if (name && name !== 'Unknown') {
           names.push(name);
@@ -276,6 +268,7 @@ async function resolveRelationshipNames(relationships, type = 'author') {
     }
   }
   
+  // Remove duplicates
   return [...new Set(names)];
 }
 
@@ -367,6 +360,7 @@ async function main() {
   console.log(`📚 Manga ID: ${mangaId}`);
 
   try {
+    // ✅ Fetch manga WITH expanded authors, artists, and tags
     const manga = await Manga.get(mangaId, {
       authors: true,
       artists: true,
@@ -379,14 +373,17 @@ async function main() {
     const safeTitle = sanitize(mangaTitle);
     const description = getLocalizedName(manga.description) || 'No description';
     
+    // ✅ Resolve author & artist names
     console.log('📥 Resolving authors...');
     const authors = await resolveRelationshipNames(manga.authors, 'author');
     
     console.log('📥 Resolving artists...');
     const artists = await resolveRelationshipNames(manga.artists, 'artist');
     
+    // ✅ Original language
     const originalLanguage = manga.originalLanguage?.toUpperCase() || 'N/A';
     
+    // ✅ Genres & Themes from tags
     const genres = (manga.tags || [])
       .filter(t => t.group === 'genre')
       .map(t => getLocalizedName(t.name))
@@ -408,78 +405,39 @@ async function main() {
     console.log('📥 Fetching all covers...');
     const allCovers = await Cover.getMangaCovers(mangaId);
     
-    // ✅ FIXED: Skip main cover (volume === null), only get volume covers
-    const seenFileNames = new Set();
-    const volumeCovers = allCovers
-      .filter(c => c?.fileName && c.volume !== null)  // ⚠️ SKIP MAIN COVER
-      .filter(c => {
-        if (seenFileNames.has(c.fileName)) {
-          console.log(`⚠️ Skipping duplicate fileName: ${c.fileName}`);
-          return false;
-        }
-        seenFileNames.add(c.fileName);
-        return true;
-      })
+    const validCovers = allCovers
+      .filter(c => c?.fileName)
       .sort((a, b) => {
-        // Sort by volume number ascending
-        return parseFloat(a.volume) - parseFloat(b.volume);
+        if (a.volume === null && b.volume !== null) return -1;
+        if (b.volume === null && a.volume !== null) return 1;
+        return 0;
       });
     
-    console.log(`📥 Found ${volumeCovers.length} volume cover(s) (main cover skipped)`);
-    
-    // Debug: Log cover details
-    volumeCovers.forEach((c, i) => {
-      console.log(`  Cover ${i + 1}: ${c.fileName} (volume: ${c.volume})`);
-    });
+    console.log(`📥 Found ${validCovers.length} valid cover(s)`);
     
     const workDir = join(process.cwd(), 'manga_download');
     mkdirSync(workDir, { recursive: true });
     
-    // Download covers with hash-based deduplication
+    // Download covers (max 10 for Telegram album)
     const coverPaths = [];
-    const seenHashes = new Set();  // ✅ Track file hashes to catch same-image-different-filename
     const thumbPath = join(workDir, 'thumb.jpg');
     
-    const maxCoversToDownload = Math.min(volumeCovers.length, 10);
-    
-    for (let i = 0; i < maxCoversToDownload; i++) {
-      const cover = volumeCovers[i];
+    for (let i = 0; i < Math.min(validCovers.length, 10); i++) {
+      const cover = validCovers[i];
       const coverUrl = `https://uploads.mangadex.org/covers/${mangaId}/${cover.fileName}`;
       const coverPath = join(workDir, `cover_${i}.jpg`);
       
-      console.log(`📥 Downloading cover ${i + 1}/${maxCoversToDownload}: ${cover.fileName}`);
+      console.log(`📥 Downloading cover ${i + 1}: ${cover.fileName}`);
       const result = await downloadCover(coverUrl, coverPath);
+      if (result) coverPaths.push(result);
       
-      if (result) {
-        const stats = statSync(result);
-        if (stats.size > 1000) {
-          // ✅ Calculate hash to detect duplicate images
-          const hash = await getFileHash(result);
-          
-          if (seenHashes.has(hash)) {
-            console.warn(`  ⚠️ Duplicate image detected (hash: ${hash.substring(0, 8)}...), skipping`);
-            rmSync(result, { force: true });
-          } else {
-            seenHashes.add(hash);
-            coverPaths.push(result);
-            console.log(`  ✅ Downloaded (${(stats.size / 1024).toFixed(1)} KB, hash: ${hash.substring(0, 8)}...)`);
-            
-            // Create thumbnail from first unique cover
-            if (coverPaths.length === 1) {
-              console.log('🖼️ Creating thumbnail...');
-              await createThumbnail(result, thumbPath);
-            }
-          }
-        } else {
-          console.warn(`  ⚠️ File too small, skipping: ${result}`);
-          rmSync(result, { force: true });
-        }
+      if (i === 0 && result) {
+        console.log('🖼️ Creating thumbnail...');
+        await createThumbnail(result, thumbPath);
       }
       
       await new Promise(r => setTimeout(r, 150));
     }
-    
-    console.log(`📊 Total unique covers downloaded: ${coverPaths.length}`);
     
     // Fetch chapters
     const allChapters = [];
@@ -510,6 +468,7 @@ async function main() {
       
       let infoText = `<b>${escapeHtml(mangaTitle)}</b>\n\n`;
       
+      // ✅ Add author/artist/original language/themes
       if (authors.length) infoText += `<b>📝 Author:</b> ${escapeHtml(authors.join(', '))}\n`;
       if (artists.length) infoText += `<b>🎨 Artist:</b> ${escapeHtml(artists.join(', '))}\n`;
       infoText += `<b>🌐 Original Language:</b> <code>${originalLanguage}</code>\n`;
@@ -556,6 +515,7 @@ async function main() {
       }
     }
     
+    // ⚠️ Handle no chapters gracefully
     if (validChapters.length === 0) { 
       console.warn('⚠️ No chapters found, but manga info was posted');
       if (telegramChatId && process.env.TELEGRAM_BOT_TOKEN && rootMessageId) {
@@ -572,6 +532,7 @@ async function main() {
     mkdirSync(mangaDir, { recursive: true });
     mkdirSync(bundleDir, { recursive: true });
     
+    // 📦 Bundle chapters
     const bundles = [];
     let currentBundle = { chapters: [], size: 0 };
     
@@ -613,6 +574,7 @@ async function main() {
     if (currentBundle.chapters.length > 0) bundles.push(currentBundle);
     console.log(`\n📦 Created ${bundles.length} bundle(s)`);
     
+    // 📤 Upload bundles with cover thumbnail
     const uploadBundle = async (bundle, bundleIdx) => {
       const bundleStart = formatChapNum(bundle.chapters[0].chapNum);
       const bundleEnd = formatChapNum(bundle.chapters[bundle.chapters.length - 1].chapNum);
