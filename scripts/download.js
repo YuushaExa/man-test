@@ -89,7 +89,7 @@ async function sendMediaGroupWithLocalFiles(chatId, filePaths, replyToMessageId 
 async function createThumbnail(sourcePath, destPath) {
   try {
     await sharp(sourcePath)
-      .resize(54, 54)
+      .resize(108, 108)
       .jpeg({ quality: 80 })
       .toFile(destPath);
     return destPath;
