@@ -14,21 +14,20 @@ const TELEGRAM_FILE_LIMIT = 50 * 1024 * 1024;
 const MAX_CONCURRENT_PAGES = 4;
 
 // ─────────────────────────────────────────────────────────────
-// 🖼️ NEW: Send multiple local photos as Telegram album (media group)
+// 🖼️ Send multiple local photos as Telegram album (media group)
 // ─────────────────────────────────────────────────────────────
 async function sendMediaGroupWithLocalFiles(chatId, filePaths, replyToMessageId = null, caption = null) {
   if (!process.env.TELEGRAM_BOT_TOKEN || filePaths.length === 0) return null;
   
-  const MAX_MEDIA = 10; // Telegram limit per album
+  const MAX_MEDIA = 10;
   const filesToSend = filePaths.slice(0, MAX_MEDIA);
   
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const form = new FormData();
       form.append('chat_id', chatId);
-      if (replyToMessageId) form.append('reply_to_message_id', replyToMessageId);
+      if (replyToMessageId) form.append('reply_to_message_id', String(replyToMessageId));
       
-      // Build media array with attach:// references
       const media = filesToSend.map((path, idx) => {
         const attachId = `cover_${idx}`;
         const item = {
@@ -36,7 +35,6 @@ async function sendMediaGroupWithLocalFiles(chatId, filePaths, replyToMessageId 
           media: `attach://${attachId}`,
           parse_mode: 'HTML'
         };
-        // Add caption only to FIRST image in album
         if (idx === 0 && caption) {
           item.caption = caption.substring(0, 1024);
         }
@@ -45,7 +43,6 @@ async function sendMediaGroupWithLocalFiles(chatId, filePaths, replyToMessageId 
       
       form.append('media', JSON.stringify(media));
       
-      // Attach each file with matching attachId
       for (const [idx, path] of filesToSend.entries()) {
         const attachId = `cover_${idx}`;
         form.append(attachId, await fileFromPath(path), `cover_${idx}.jpg`);
@@ -60,10 +57,9 @@ async function sendMediaGroupWithLocalFiles(chatId, filePaths, replyToMessageId 
       const data = await res.json();
       if (data.ok) return data;
       
-      // Handle rate limits
       if (data.description?.includes('Too Many Requests')) {
         const retryAfter = data.description.match(/retry after (\d+)/)?.[1] || 3;
-        await new Promise(r => setTimeout(r, Math.min(retryAfter * 1000, 10000)));
+        await new Promise(r => setTimeout(r, Math.min(parseInt(retryAfter) * 1000, 10000)));
       } else if (attempt < 3) {
         await new Promise(r => setTimeout(r, 2000 * attempt));
       }
@@ -77,7 +73,7 @@ async function sendMediaGroupWithLocalFiles(chatId, filePaths, replyToMessageId 
 }
 
 // ─────────────────────────────────────────────────────────────
-// 🖼️ Thumbnail creation (unchanged)
+// 🖼️ Thumbnail creation
 // ─────────────────────────────────────────────────────────────
 async function createThumbnail(sourcePath, destPath) {
   try {
@@ -93,7 +89,7 @@ async function createThumbnail(sourcePath, destPath) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 📥 Download single file with retry (unchanged)
+// 📥 Download single file with retry
 // ─────────────────────────────────────────────────────────────
 async function downloadCover(coverUrl, destPath) {
   for (let i = 0; i < 3; i++) {
@@ -111,7 +107,7 @@ async function downloadCover(coverUrl, destPath) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 📤 Send single document with thumbnail (unchanged)
+// 📤 Send single document with thumbnail
 // ─────────────────────────────────────────────────────────────
 async function sendDocumentWithThumb(chatId, filePath, fileName, caption, replyToMessageId, thumbPath) {
   if (!process.env.TELEGRAM_BOT_TOKEN) return null;
@@ -122,7 +118,7 @@ async function sendDocumentWithThumb(chatId, filePath, fileName, caption, replyT
       form.append('chat_id', chatId);
       form.append('document', await fileFromPath(filePath), fileName);
       if (caption) form.append('caption', caption.substring(0, 1024));
-      if (replyToMessageId) form.append('reply_to_message_id', replyToMessageId);
+      if (replyToMessageId) form.append('reply_to_message_id', String(replyToMessageId));
       
       if (thumbPath && existsSync(thumbPath)) {
         form.append('thumb', await fileFromPath(thumbPath), 'thumb.jpg');
@@ -138,7 +134,7 @@ async function sendDocumentWithThumb(chatId, filePath, fileName, caption, replyT
       
       if (data.description?.includes('Too Many Requests')) {
         const retryAfter = data.description.match(/retry after (\d+)/)?.[1] || 3;
-        await new Promise(r => setTimeout(r, Math.min(retryAfter * 1000, 10000)));
+        await new Promise(r => setTimeout(r, Math.min(parseInt(retryAfter) * 1000, 10000)));
       } else if (attempt < 3) {
         await new Promise(r => setTimeout(r, 2000 * attempt));
       }
@@ -151,7 +147,7 @@ async function sendDocumentWithThumb(chatId, filePath, fileName, caption, replyT
 }
 
 // ─────────────────────────────────────────────────────────────
-// 💬 Send text message (unchanged)
+// 💬 Send text message
 // ─────────────────────────────────────────────────────────────
 async function sendText(chatId, text, replyToMessageId = null, disablePreview = true) {
   if (!process.env.TELEGRAM_BOT_TOKEN) return null;
@@ -168,12 +164,12 @@ async function sendText(chatId, text, replyToMessageId = null, disablePreview = 
       })
     });
     const data = await res.json();
-    return data.ok ? data.result.message_id : null;
+    return data.ok ? data.result?.message_id : null;
   } catch { return null; }
 }
 
 // ─────────────────────────────────────────────────────────────
-// 🔤 HTML escape & sanitize helpers (unchanged)
+// 🔤 HTML escape & sanitize helpers
 // ─────────────────────────────────────────────────────────────
 function escapeHtml(str) {
   if (!str) return '';
@@ -195,7 +191,7 @@ function formatChapNum(num) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 🌏 Format alt titles - JP/CN only (unchanged)
+// 🌏 Format alt titles - JP/CN only
 // ─────────────────────────────────────────────────────────────
 function formatAltTitles(altTitles, limit = 3) {
   if (!altTitles || altTitles.length === 0) return null;
@@ -219,11 +215,19 @@ function formatAltTitles(altTitles, limit = 3) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 📥 Download chapter pages with concurrency (unchanged)
+// 🌐 Get localized name helper
+// ─────────────────────────────────────────────────────────────
+function getLocalizedName(localized, lang = 'en') {
+  if (!localized) return 'Unknown';
+  return localized[lang] || localized['en'] || Object.values(localized)[0] || 'Unknown';
+}
+
+// ─────────────────────────────────────────────────────────────
+// 📥 Download chapter pages with concurrency
 // ─────────────────────────────────────────────────────────────
 async function downloadPages(pages, chapDir) {
   const downloadPage = async (pageUrl, pageIdx) => {
-    const ext = pageUrl.split('.').pop().split('?')[0] || 'jpg';
+    const ext = pageUrl.split('.').pop()?.split('?')[0] || 'jpg';
     const filename = `${String(pageIdx + 1).padStart(3, '0')}.${ext}`;
     const destPath = join(chapDir, filename);
     
@@ -248,7 +252,7 @@ async function downloadPages(pages, chapDir) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 🗜️ Create ZIP archive (unchanged)
+// 🗜️ Create ZIP archive
 // ─────────────────────────────────────────────────────────────
 async function createZip(sourceDir, outputPath) {
   return new Promise((resolve, reject) => {
@@ -263,7 +267,7 @@ async function createZip(sourceDir, outputPath) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 📚 Select best chapters (English优先) (unchanged)
+// 📚 Select best chapters (English priority)
 // ─────────────────────────────────────────────────────────────
 function selectChapters(allChapters, maxChapters) {
   const chapterMap = new Map();
@@ -306,13 +310,42 @@ async function main() {
   console.log(`📚 Manga ID: ${mangaId}`);
 
   try {
-    const manga = await Manga.get(mangaId);
+    // ✅ Fetch manga WITH expanded authors, artists, and tags
+    const manga = await Manga.get(mangaId, {
+      authors: true,
+      artists: true,
+      tags: true
+    });
+    
     if (!manga) throw new Error('Manga not found');
     
-    const mangaTitle = manga.localTitle || Object.values(manga.title)[0] || 'Unknown';
+    const mangaTitle = manga.localTitle || getLocalizedName(manga.title);
     const safeTitle = sanitize(mangaTitle);
-    const description = manga.description?.en || Object.values(manga.description || {})[0] || 'No description';
-    const genres = manga.tags?.filter(t => t.group === 'genre').map(t => t.name?.en || Object.values(t.name)[0]) || [];
+    const description = getLocalizedName(manga.description) || 'No description';
+    
+    // ✅ Extract authors & artists (with expansion)
+    const authors = manga.authors
+      .map(rel => rel.name ? getLocalizedName(rel.name) : rel.id)
+      .filter(name => name && name !== 'Unknown');
+    
+    const artists = manga.artists
+      .map(rel => rel.name ? getLocalizedName(rel.name) : rel.id)
+      .filter(name => name && name !== 'Unknown');
+    
+    // ✅ Original language
+    const originalLanguage = manga.originalLanguage?.toUpperCase() || 'N/A';
+    
+    // ✅ Genres & Themes from tags
+    const genres = (manga.tags || [])
+      .filter(t => t.group === 'genre')
+      .map(t => getLocalizedName(t.name))
+      .filter(n => n && n !== 'Unknown');
+    
+    const themes = (manga.tags || [])
+      .filter(t => t.group === 'theme')
+      .map(t => getLocalizedName(t.name))
+      .filter(n => n && n !== 'Unknown');
+    
     const status = manga.status ? manga.status.charAt(0).toUpperCase() + manga.status.slice(1) : 'Unknown';
     const year = manga.year || 'N/A';
     const altTitles = formatAltTitles(manga.altTitles);
@@ -321,7 +354,6 @@ async function main() {
     console.log('📥 Fetching all covers...');
     const allCovers = await Cover.getMangaCovers(mangaId);
     
-    // Filter & sort: main cover first, then others
     const validCovers = allCovers
       .filter(c => c?.fileName)
       .sort((a, b) => {
@@ -348,13 +380,12 @@ async function main() {
       const result = await downloadCover(coverUrl, coverPath);
       if (result) coverPaths.push(result);
       
-      // Create thumbnail from FIRST cover only (for bundle uploads)
       if (i === 0 && result) {
         console.log('🖼️ Creating thumbnail...');
         await createThumbnail(result, thumbPath);
       }
       
-      await new Promise(r => setTimeout(r, 150)); // Avoid rate limits
+      await new Promise(r => setTimeout(r, 150));
     }
     
     // Fetch chapters
@@ -379,23 +410,34 @@ async function main() {
     let rootMessageId = null;
     if (telegramChatId && process.env.TELEGRAM_BOT_TOKEN) {
       const genresStr = genres.length > 0 ? genres.join(', ') : 'N/A';
+      const themesStr = themes.length > 0 ? themes.join(', ') : null;
       const truncatedDesc = description.length > 800 
         ? description.substring(0, 800) + '...' 
         : description;
       
       let infoText = `<b>${escapeHtml(mangaTitle)}</b>\n\n`;
+      
+      // ✅ Add author/artist/original language/themes
+      if (authors.length) infoText += `<b>📝 Author:</b> ${escapeHtml(authors.join(', '))}\n`;
+      if (artists.length) infoText += `<b>🎨 Artist:</b> ${escapeHtml(artists.join(', '))}\n`;
+      infoText += `<b>🌐 Original Language:</b> <code>${originalLanguage}</code>\n`;
+      
       if (altTitles) infoText += `<b>Also known as:</b> <i>${escapeHtml(altTitles)}</i>\n`;
+      
       infoText += 
-        `<b>Chapters:</b> ${validChapters.length} (${escapeHtml(status)})\n` +
-        `<b>Year:</b> ${year}\n` +
-        `<b>Genres:</b> <code>${escapeHtml(genresStr)}</code>\n` +
-        `<b>Description</b>\n<blockquote><i>${escapeHtml(truncatedDesc)}</i></blockquote>`;
+        `<b>📖 Chapters:</b> ${validChapters.length} (${escapeHtml(status)})\n` +
+        `<b>📅 Year:</b> ${year}\n` +
+        `<b>🏷️ Genres:</b> <code>${escapeHtml(genresStr)}</code>\n`;
+      
+      if (themesStr) {
+        infoText += `<b>✨ Themes:</b> <code>${escapeHtml(themesStr)}</code>\n`;
+      }
+      
+      infoText += `\n<b>📄 Description</b>\n<blockquote><i>${escapeHtml(truncatedDesc)}</i></blockquote>`;
       
       if (coverPaths.length === 0) {
-        // No covers: send text only
         rootMessageId = await sendText(telegramChatId, infoText, null, false);
       } else if (coverPaths.length === 1) {
-        // Single cover: use sendPhoto with caption
         const form = new FormData();
         form.append('chat_id', telegramChatId);
         form.append('photo', await fileFromPath(coverPaths[0]), 'cover.jpg');
@@ -405,11 +447,10 @@ async function main() {
         const res = await fetch(`${TELEGRAM_API}/sendPhoto`, { method: 'POST', body: form });
         const data = await res.json();
         if (data.ok) {
-          rootMessageId = data.result.message_id;
+          rootMessageId = data.result?.message_id;
           console.log('📤 Posted manga info with single cover');
         }
       } else {
-        // Multiple covers: send as album with caption on first image
         const albumResult = await sendMediaGroupWithLocalFiles(
           telegramChatId, 
           coverPaths, 
@@ -506,7 +547,7 @@ async function main() {
       const bundleSize = bundle.chapters.reduce((sum, c) => sum + c.size, 0);
       console.log(`Part ${bundleIdx + 1}/${bundles.length} (Ch.${bundleStart}-${bundleEnd}, ${(bundleSize/1024/1024).toFixed(1)} MB)`);
       
-      if (rootMessageId) {
+      if (rootMessageId && telegramChatId) {
         const caption = `Part: ${bundleIdx + 1}/${bundles.length}`;
         await sendDocumentWithThumb(telegramChatId, bundleZipPath, bundleZipName, caption, rootMessageId, thumbPath);
       }
