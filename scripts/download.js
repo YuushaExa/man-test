@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 import { Manga, Chapter, Cover, Author } from 'mangadex-full-api';
 import fetch from 'node-fetch';
-import { createWriteStream, mkdirSync, existsSync, rmSync } from 'fs';
+import { createWriteStream, mkdirSync, existsSync, rmSync, statSync } from 'fs';
 import { pipeline } from 'stream/promises';
 import archiver from 'archiver';
 import { join } from 'path';
 import { FormData } from 'formdata-node';
 import { fileFromPath } from 'formdata-node/file-from-path';
 import sharp from 'sharp';
+import { createHash } from 'crypto';
 
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
 const TELEGRAM_FILE_LIMIT = 50 * 1024 * 1024;
@@ -109,6 +110,15 @@ async function downloadCover(coverUrl, destPath) {
       await new Promise(r => setTimeout(r, 300));
     }
   }
+}
+
+// ─────────────────────────────────────────────────────────────
+// 🔐 Calculate file hash for duplicate detection
+// ─────────────────────────────────────────────────────────────
+async function getFileHash(filePath) {
+  const { readFile } = await import('fs/promises');
+  const data = await readFile(filePath);
+  return createHash('md5').update(data).digest('hex');
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -231,7 +241,7 @@ function getLocalizedName(localized, lang = 'en') {
 }
 
 // ─────────────────────────────────────────────────────────────
-// ✅ FIXED: Resolve author/artist IDs to names
+// ✅ Resolve author/artist IDs to names
 // ─────────────────────────────────────────────────────────────
 async function resolveRelationshipNames(relationships, type = 'author') {
   if (!relationships || relationships.length === 0) return [];
@@ -394,82 +404,8 @@ async function main() {
     console.log(`📝 Authors: ${authors.join(', ') || 'Unknown'}`);
     console.log(`🎨 Artists: ${artists.join(', ') || 'Unknown'}`);
     
-    // 📥 Fetch ALL covers from MangaDex
-    console.log('📥 Fetching all covers...');
-    const allCovers = await Cover.getMangaCovers(mangaId);
-    
-    // ✅ FIXED: Deduplicate covers by fileName to avoid duplicates
-    const seenFileNames = new Set();
-    const validCovers = allCovers
-      .filter(c => c?.fileName)
-      .filter(c => {
-        // Skip if we've already seen this fileName
-        if (seenFileNames.has(c.fileName)) {
-          console.log(`⚠️ Skipping duplicate cover: ${c.fileName}`);
-          return false;
-        }
-        seenFileNames.add(c.fileName);
-        return true;
-      })
-      .sort((a, b) => {
-        // Main cover (volume === null) first
-        if (a.volume === null && b.volume !== null) return -1;
-        if (b.volume === null && a.volume !== null) return 1;
-        // Then by volume number
-        if (a.volume !== null && b.volume !== null) {
-          return parseFloat(a.volume) - parseFloat(b.volume);
-        }
-        return 0;
-      });
-    
-    console.log(`📥 Found ${validCovers.length} unique cover(s) after deduplication`);
-    
-    // Debug: Log cover details
-    validCovers.forEach((c, i) => {
-      console.log(`  Cover ${i + 1}: ${c.fileName} (volume: ${c.volume || 'main'})`);
-    });
-    
-    const workDir = join(process.cwd(), 'manga_download');
-    mkdirSync(workDir, { recursive: true });
-    
-    // Download covers (max 10 for Telegram album)
-    const coverPaths = [];
-    const thumbPath = join(workDir, 'thumb.jpg');
-    
-    // ✅ Limit to unique covers only
-    const maxCoversToDownload = Math.min(validCovers.length, 10);
-    
-    for (let i = 0; i < maxCoversToDownload; i++) {
-      const cover = validCovers[i];
-      // ✅ FIXED: Ensure unique URL
-      const coverUrl = `https://uploads.mangadex.org/covers/${mangaId}/${cover.fileName}`;
-      const coverPath = join(workDir, `cover_${i}.jpg`);
-      
-      console.log(`📥 Downloading cover ${i + 1}/${maxCoversToDownload}: ${cover.fileName}`);
-      const result = await downloadCover(coverUrl, coverPath);
-      
-      if (result) {
-        // ✅ Verify file size to ensure it's not a duplicate/empty file
-        const stats = await import('fs').then(fs => fs.statSync(result));
-        if (stats.size > 1000) { // At least 1KB
-          coverPaths.push(result);
-          console.log(`  ✅ Downloaded (${(stats.size / 1024).toFixed(1)} KB)`);
-        } else {
-          console.warn(`  ⚠️ File too small, skipping: ${result}`);
-        }
-      }
-      
-      if (i === 0 && result) {
-        console.log('🖼️ Creating thumbnail...');
-        await createThumbnail(result, thumbPath);
-      }
-      
-      await new Promise(r => setTimeout(r, 150));
-    }
-    
-    console.log(`📊 Total unique covers downloaded: ${coverPaths.length}`);
-    
-    // Fetch chapters
+    // 📥 Fetch chapters FIRST (before covers)
+    console.log('📥 Fetching chapters...');
     const allChapters = [];
     let offset = 0;
     while (true) {
@@ -486,6 +422,84 @@ async function main() {
     }
     
     const validChapters = selectChapters(allChapters, maxChapters);
+    
+    // ✅ Skip everything if no chapters found
+    if (validChapters.length === 0) {
+      console.warn('⚠️ No chapters found - skipping Telegram message and download');
+      process.exit(0);
+    }
+    
+    console.log(`✅ ${validChapters.length} chapters selected`);
+    
+    // 📥 Fetch ALL covers from MangaDex
+    console.log('📥 Fetching all covers...');
+    const allCovers = await Cover.getMangaCovers(mangaId);
+    
+    // ✅ FIXED: Skip main cover (volume === null), only keep volume covers
+    const seenHashes = new Set();
+    const validCovers = allCovers
+      .filter(c => c?.fileName)
+      .filter(c => {
+        // ✅ Skip main cover (no volume)
+        if (c.volume === null || c.volume === undefined) {
+          console.log(`⚠️ Skipping main cover: ${c.fileName}`);
+          return false;
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        // Sort by volume number
+        if (a.volume !== null && b.volume !== null) {
+          return parseFloat(a.volume) - parseFloat(b.volume);
+        }
+        return 0;
+      });
+    
+    console.log(`📥 Found ${validCovers.length} volume cover(s)`);
+    
+    const workDir = join(process.cwd(), 'manga_download');
+    mkdirSync(workDir, { recursive: true });
+    
+    // Download covers with hash-based deduplication
+    const coverPaths = [];
+    const thumbPath = join(workDir, 'thumb.jpg');
+    const maxCoversToDownload = Math.min(validCovers.length, 10);
+    
+    for (let i = 0; i < maxCoversToDownload; i++) {
+      const cover = validCovers[i];
+      const coverUrl = `https://uploads.mangadex.org/covers/${mangaId}/${cover.fileName}`;
+      const coverPath = join(workDir, `cover_${i}.jpg`);
+      
+      console.log(`📥 Downloading cover ${i + 1}/${maxCoversToDownload} (Vol.${cover.volume}): ${cover.fileName}`);
+      const result = await downloadCover(coverUrl, coverPath);
+      
+      if (result) {
+        const stats = statSync(result);
+        if (stats.size > 1000) {
+          // ✅ Check file hash to detect actual duplicates
+          const hash = await getFileHash(result);
+          if (seenHashes.has(hash)) {
+            console.log(`  ⚠️ Duplicate content detected (hash: ${hash.substring(0, 8)}...), skipping`);
+            rmSync(result, { force: true });
+          } else {
+            seenHashes.add(hash);
+            coverPaths.push(result);
+            console.log(`  ✅ Downloaded (${(stats.size / 1024).toFixed(1)} KB, hash: ${hash.substring(0, 8)}...)`);
+            
+            if (coverPaths.length === 1) {
+              console.log('🖼️ Creating thumbnail...');
+              await createThumbnail(result, thumbPath);
+            }
+          }
+        } else {
+          console.warn(`  ⚠️ File too small, skipping: ${result}`);
+        }
+      }
+      
+      await new Promise(r => setTimeout(r, 150));
+    }
+    
+    console.log(`📊 Total unique covers downloaded: ${coverPaths.length}`);
     
     // 📤 Post manga info with cover album
     let rootMessageId = null;
@@ -543,17 +557,6 @@ async function main() {
         }
       }
     }
-    
-    if (validChapters.length === 0) { 
-      console.warn('⚠️ No chapters found, but manga info was posted');
-      if (telegramChatId && process.env.TELEGRAM_BOT_TOKEN && rootMessageId) {
-        await sendText(telegramChatId, '<i>No downloadable chapters found for this manga.</i>', rootMessageId);
-      }
-      rmSync(workDir, { recursive: true, force: true });
-      process.exit(0);
-    }
-    
-    console.log(`✅ ${validChapters.length} chapters selected`);
     
     const mangaDir = join(workDir, 'chapters');
     const bundleDir = join(workDir, 'bundles');
