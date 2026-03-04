@@ -645,9 +645,9 @@ async function main() {
     // 📥 Fetch ALL covers from MangaDex
 console.log('📥 Fetching all covers...');
 // Fetch with different parameters
-allCovers = await Cover.getMangaCovers(mangaId, { limit: Infinity });
+const allCovers = await Cover.getMangaCovers(mangaId, { limit: 100 });
     
-// ✅ First: Try to get volume covers (skip main)
+    // ✅ First: Try to get volume covers (skip main)
 const seenFileNames = new Set();
 let volumeCovers = allCovers
   .filter(c => c?.fileName && c.volume !== null)
