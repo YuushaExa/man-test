@@ -644,8 +644,7 @@ async function main() {
     console.log(`🎨 Artists: ${artists.join(', ') || 'Unknown'}`);
     // 📥 Fetch ALL covers from MangaDex
 console.log('📥 Fetching all covers...');
-// Fetch with different parameters
-allCovers = await Cover.getMangaCovers(mangaId);        
+const allCovers = await Cover.getMangaCovers(mangaId);        
     // ✅ First: Try to get volume covers (skip main)
 const seenFileNames = new Set();
 let volumeCovers = allCovers
