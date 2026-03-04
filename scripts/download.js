@@ -645,7 +645,8 @@ async function main() {
     // 📥 Fetch ALL covers from MangaDex
 console.log('📥 Fetching all covers...');
 // Fetch with different parameters
-const allCovers = await Cover.getMangaCovers(mangaId, { limit: 100, offset: 0 });    
+const allCovers = await fetch(`https://api.mangadex.org/cover?manga[]=${mangaId}&limit=100`).then(r => r.json()).then(d => d.data);
+    
     // ✅ First: Try to get volume covers (skip main)
 const seenFileNames = new Set();
 let volumeCovers = allCovers
