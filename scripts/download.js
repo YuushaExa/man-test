@@ -24,6 +24,8 @@ function getNextProxy() {
     proxyIndex++;
     return proxy;
 }
+
+console.log(`🔐 PROXY_LIST: ${PROXY_LIST.length} proxies loaded`);
 // ─────────────────────────────────────────────────────────────
 // 🖼️ Send multiple local photos as Telegram album (media group)
 // ─────────────────────────────────────────────────────────────
