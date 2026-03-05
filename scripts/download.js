@@ -15,7 +15,11 @@ const TELEGRAM_API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOK
 const TELEGRAM_FILE_LIMIT = 50 * 1024 * 1024;
 const MAX_CONCURRENT_PAGES = 2;
 
-const PROXY_LIST = process.env.PROXY_LIST?.split(',').map(p => p.trim()).filter(p => p) || [];
+const PROXY_LIST = [
+    'http://20.205.138.223:443',
+    'http://47.243.181.85:41134',
+    'http://84.17.47.147:9002'
+];
 let proxyIndex = 0;
 
 function getNextProxy() {
@@ -25,7 +29,8 @@ function getNextProxy() {
     return proxy;
 }
 
-console.log(`🔐 PROXY_LIST: ${PROXY_LIST.length} proxies loaded`);
+// 🔐 Debug log
+console.log(`🔐 PROXY_LIST: ${PROXY_LIST.length} proxies loaded (hardcoded)`);
 // ─────────────────────────────────────────────────────────────
 // 🖼️ Send multiple local photos as Telegram album (media group)
 // ─────────────────────────────────────────────────────────────
