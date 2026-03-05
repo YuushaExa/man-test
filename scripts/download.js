@@ -9,28 +9,11 @@ import { FormData } from 'formdata-node';
 import { fileFromPath } from 'formdata-node/file-from-path';
 import sharp from 'sharp';
 import { createHash } from 'crypto';
-import { HttpsProxyAgent } from 'https-proxy-agent'; 
 
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
 const TELEGRAM_FILE_LIMIT = 50 * 1024 * 1024;
 const MAX_CONCURRENT_PAGES = 2;
 
-const PROXY_LIST = [
-    'http://20.205.138.223:443',
-    'http://47.243.181.85:41134',
-    'http://84.17.47.147:9002'
-];
-let proxyIndex = 0;
-
-function getNextProxy() {
-    if (PROXY_LIST.length === 0) return null;
-    const proxy = PROXY_LIST[proxyIndex % PROXY_LIST.length];
-    proxyIndex++;
-    return proxy;
-}
-
-// 🔐 Debug log
-console.log(`🔐 PROXY_LIST: ${PROXY_LIST.length} proxies loaded (hardcoded)`);
 // ─────────────────────────────────────────────────────────────
 // 🖼️ Send multiple local photos as Telegram album (media group)
 // ─────────────────────────────────────────────────────────────
@@ -313,7 +296,7 @@ async function resolveRelationshipNames(relationships, type = 'author') {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 📥 Download chapter pages with concurrency + PROXY
+// 📥 Download chapter pages with concurrency
 // ─────────────────────────────────────────────────────────────
 async function downloadPages(pages, chapDir) {
 
@@ -323,48 +306,42 @@ async function downloadPages(pages, chapDir) {
     console.log(`   Page ${i + 1}: ${url.substring(0, 100)}...`);
   });
   
-const downloadPage = async (pageUrl, pageIdx) => {
-    const ext = pageUrl.split('.').pop()?.split('?')[0] || 'jpg';
-    const filename = `${String(pageIdx + 1).padStart(3, '0')}.${ext}`;
-    const destPath = join(chapDir, filename);
-    
-    for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-            const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), 60000); // ✅ Increased to 60s
-            
-            const proxyUrl = getNextProxy();
-            const agent = proxyUrl ? new HttpsProxyAgent(proxyUrl) : null;
-            
-            // 🔐 Debug log
-            console.log(`🔄 Using proxy: ${proxyUrl || 'direct'}`);
-            
-            const res = await fetch(pageUrl, {
-                signal: controller.signal,
-                headers: { 'User-Agent': 'MangaBot/1.0' },
-                agent // ✅ Add proxy agent
-            });
-            clearTimeout(timeout);
-            
-            if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-            if (!res.body) throw new Error('Empty response body');
-            
-            const writer = createWriteStream(destPath);
-            await pipeline(res.body, writer);
-            
-            const stats = statSync(destPath);
-            if (stats.size < 1024) throw new Error('File too small');
-            
-            return true;
-        } catch (err) {
-            console.warn(`⚠️ Page ${pageIdx + 1} attempt ${attempt + 1} failed: ${err.message}`);
-            if (attempt === 2) {
-                console.error(`❌ Giving up on page ${pageIdx + 1}: ${pageUrl}`);
-                throw new Error(`Failed page ${pageIdx + 1}: ${err.message}`);
-            }
-            await new Promise(r => setTimeout(r, 2000 * Math.pow(2, attempt))); // ✅ Slower retries
-        }
+  const downloadPage = async (pageUrl, pageIdx) => {
+  const ext = pageUrl.split('.').pop()?.split('?')[0] || 'jpg';
+  const filename = `${String(pageIdx + 1).padStart(3, '0')}.${ext}`;
+  const destPath = join(chapDir, filename);
+  
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 60000);
+      
+      const res = await fetch(pageUrl, { 
+        signal: controller.signal,
+        headers: { 'User-Agent': 'MangaBot/1.0' }
+      });
+      clearTimeout(timeout);
+      
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+      if (!res.body) throw new Error('Empty response body');
+      
+      const writer = createWriteStream(destPath);
+      await pipeline(res.body, writer);
+      
+      // Verify file was written
+      const stats = statSync(destPath);
+      if (stats.size < 1024) throw new Error('File too small, likely corrupted');
+      
+      return true;
+    } catch (err) {
+      console.warn(`⚠️ Page ${pageIdx + 1} attempt ${attempt + 1} failed: ${err.message}`);
+      if (attempt === 2) {
+        console.error(`❌ Giving up on page ${pageIdx + 1}: ${pageUrl}`);
+        throw new Error(`Failed page ${pageIdx + 1}: ${err.message}`);
+      }
+      await new Promise(r => setTimeout(r, 2000 * Math.pow(2, attempt)));
     }
+  }
 };
 
   for (let i = 0; i < pages.length; i += MAX_CONCURRENT_PAGES) {
