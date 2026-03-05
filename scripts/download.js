@@ -307,23 +307,42 @@ async function downloadPages(pages, chapDir) {
   });
   
   const downloadPage = async (pageUrl, pageIdx) => {
-    const ext = pageUrl.split('.').pop()?.split('?')[0] || 'jpg';
-    const filename = `${String(pageIdx + 1).padStart(3, '0')}.${ext}`;
-    const destPath = join(chapDir, filename);
-    
-    for (let i = 0; i < 2; i++) {
-      try {
-        const res = await fetch(pageUrl);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const writer = createWriteStream(destPath);
-        await pipeline(res.body, writer);
-        return true;
-      } catch {
-        if (i === 1) throw new Error(`Failed page ${pageIdx + 1}`);
-        await new Promise(r => setTimeout(r, 200));
+  const ext = pageUrl.split('.').pop()?.split('?')[0] || 'jpg';
+  const filename = `${String(pageIdx + 1).padStart(3, '0')}.${ext}`;
+  const destPath = join(chapDir, filename);
+  
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000);
+      
+      const res = await fetch(pageUrl, { 
+        signal: controller.signal,
+        headers: { 'User-Agent': 'MangaBot/1.0' }
+      });
+      clearTimeout(timeout);
+      
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+      if (!res.body) throw new Error('Empty response body');
+      
+      const writer = createWriteStream(destPath);
+      await pipeline(res.body, writer);
+      
+      // Verify file was written
+      const stats = statSync(destPath);
+      if (stats.size < 1024) throw new Error('File too small, likely corrupted');
+      
+      return true;
+    } catch (err) {
+      console.warn(`⚠️ Page ${pageIdx + 1} attempt ${attempt + 1} failed: ${err.message}`);
+      if (attempt === 2) {
+        console.error(`❌ Giving up on page ${pageIdx + 1}: ${pageUrl}`);
+        throw new Error(`Failed page ${pageIdx + 1}: ${err.message}`);
       }
+      await new Promise(r => setTimeout(r, 400 * Math.pow(2, attempt)));
     }
-  };
+  }
+};
 
   for (let i = 0; i < pages.length; i += MAX_CONCURRENT_PAGES) {
     const batch = pages.slice(i, i + MAX_CONCURRENT_PAGES);
