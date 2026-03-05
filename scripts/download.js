@@ -12,7 +12,7 @@ import { createHash } from 'crypto';
 
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
 const TELEGRAM_FILE_LIMIT = 50 * 1024 * 1024;
-const MAX_CONCURRENT_PAGES = 4;
+const MAX_CONCURRENT_PAGES = 2;
 
 // ─────────────────────────────────────────────────────────────
 // 🖼️ Send multiple local photos as Telegram album (media group)
