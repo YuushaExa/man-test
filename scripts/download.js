@@ -12,7 +12,7 @@ import { createHash } from 'crypto';
 
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
 const TELEGRAM_FILE_LIMIT = 50 * 1024 * 1024;
-const MAX_CONCURRENT_PAGES = 2;
+const MAX_CONCURRENT_PAGES = 4;
 
 // ─────────────────────────────────────────────────────────────
 // 🖼️ Send multiple local photos as Telegram album (media group)
@@ -298,55 +298,89 @@ async function resolveRelationshipNames(relationships, type = 'author') {
 // ─────────────────────────────────────────────────────────────
 // 📥 Download chapter pages with concurrency
 // ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// 📥 Download chapter pages with concurrency + FAIL-FAST
+// ─────────────────────────────────────────────────────────────
 async function downloadPages(pages, chapDir) {
-
   console.log(`📥 Downloading ${pages.length} pages...`);
-  console.log(`🔗 Sample URLs:`);
-  pages.slice(0, 3).forEach((url, i) => {
-    console.log(`   Page ${i + 1}: ${url.substring(0, 100)}...`);
-  });
+  
+  // Track if we should abort all downloads
+  let abortSignal = { cancelled: false };
   
   const downloadPage = async (pageUrl, pageIdx) => {
-  const ext = pageUrl.split('.').pop()?.split('?')[0] || 'jpg';
-  const filename = `${String(pageIdx + 1).padStart(3, '0')}.${ext}`;
-  const destPath = join(chapDir, filename);
-  
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 60000);
-      
-      const res = await fetch(pageUrl, { 
-        signal: controller.signal,
-        headers: { 'User-Agent': 'MangaBot/1.0' }
-      });
-      clearTimeout(timeout);
-      
-      if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-      if (!res.body) throw new Error('Empty response body');
-      
-      const writer = createWriteStream(destPath);
-      await pipeline(res.body, writer);
-      
-      // Verify file was written
-      const stats = statSync(destPath);
-      if (stats.size < 1024) throw new Error('File too small, likely corrupted');
-      
-      return true;
-    } catch (err) {
-      console.warn(`⚠️ Page ${pageIdx + 1} attempt ${attempt + 1} failed: ${err.message}`);
-      if (attempt === 2) {
-        console.error(`❌ Giving up on page ${pageIdx + 1}: ${pageUrl}`);
-        throw new Error(`Failed page ${pageIdx + 1}: ${err.message}`);
+    if (abortSignal.cancelled) throw new Error('Download aborted');
+    
+    const ext = pageUrl.split('.').pop()?.split('?')[0] || 'jpg';
+    const filename = `${String(pageIdx + 1).padStart(3, '0')}.${ext}`;
+    const destPath = join(chapDir, filename);
+    
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (abortSignal.cancelled) {
+        rmSync(destPath, { force: true }); // Clean up partial file
+        throw new Error('Download aborted');
       }
-      await new Promise(r => setTimeout(r, 2000 * Math.pow(2, attempt)));
+      
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 60000);
+        
+        const res = await fetch(pageUrl, { 
+          signal: controller.signal,
+          headers: { 'User-Agent': 'MangaBot/1.0' }
+        });
+        clearTimeout(timeout);
+        
+        if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+        if (!res.body) throw new Error('Empty response body');
+        
+        const writer = createWriteStream(destPath);
+        await pipeline(res.body, writer);
+        
+        // Verify file integrity
+        const stats = statSync(destPath);
+        if (stats.size < 1024) throw new Error('File too small/corrupted');
+        
+        return true;
+      } catch (err) {
+        console.warn(`⚠️ Page ${pageIdx + 1} attempt ${attempt + 1} failed: ${err.message}`);
+        
+        if (attempt === 2) {
+          // 🚨 FINAL FAILURE - trigger global abort
+          console.error(`❌ Page ${pageIdx + 1} failed after 3 retries. CANCELLING ALL DOWNLOADS.`);
+          abortSignal.cancelled = true;
+          rmSync(destPath, { force: true }); // Clean up failed file
+          throw new Error(`CRITICAL: Failed to download page ${pageIdx + 1} after 3 retries. Aborting chapter.`);
+        }
+        
+        // Exponential backoff before retry
+        await new Promise(r => setTimeout(r, 2000 * Math.pow(2, attempt)));
+      }
+    }
+  };
+
+  // Process pages in concurrent batches with abort check
+  for (let i = 0; i < pages.length; i += MAX_CONCURRENT_PAGES) {
+    if (abortSignal.cancelled) {
+      console.warn('🛑 Aborting remaining page downloads...');
+      break;
+    }
+    
+    const batch = pages.slice(i, i + MAX_CONCURRENT_PAGES);
+    try {
+      await Promise.all(batch.map((url, idx) => downloadPage(url, i + idx)));
+    } catch (batchErr) {
+      // Propagate abort signal immediately
+      if (abortSignal.cancelled || batchErr.message.includes('CRITICAL')) {
+        throw batchErr;
+      }
     }
   }
-};
-
-  for (let i = 0; i < pages.length; i += MAX_CONCURRENT_PAGES) {
-    const batch = pages.slice(i, i + MAX_CONCURRENT_PAGES);
-    await Promise.all(batch.map((url, idx) => downloadPage(url, i + idx)));
+  
+  // Final check: if aborted, clean up chapter directory
+  if (abortSignal.cancelled) {
+    console.warn(`🧹 Cleaning up incomplete chapter: ${chapDir}`);
+    rmSync(chapDir, { recursive: true, force: true });
+    throw new Error('Chapter download cancelled due to page failure');
   }
 }
 
