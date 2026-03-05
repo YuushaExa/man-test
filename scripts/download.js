@@ -314,7 +314,7 @@ async function downloadPages(pages, chapDir) {
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15000);
+      const timeout = setTimeout(() => controller.abort(), 60000);
       
       const res = await fetch(pageUrl, { 
         signal: controller.signal,
