@@ -310,6 +310,14 @@ async function resolveRelationshipNames(relationships, type = 'author') {
 // ─────────────────────────────────────────────────────────────
 // 📥 Download chapter pages with concurrency + PROXY
 // ─────────────────────────────────────────────────────────────
+async function downloadPages(pages, chapDir) {
+
+  console.log(`📥 Downloading ${pages.length} pages...`);
+  console.log(`🔗 Sample URLs:`);
+  pages.slice(0, 3).forEach((url, i) => {
+    console.log(`   Page ${i + 1}: ${url.substring(0, 100)}...`);
+  });
+  
 const downloadPage = async (pageUrl, pageIdx) => {
     const ext = pageUrl.split('.').pop()?.split('?')[0] || 'jpg';
     const filename = `${String(pageIdx + 1).padStart(3, '0')}.${ext}`;
@@ -353,6 +361,12 @@ const downloadPage = async (pageUrl, pageIdx) => {
         }
     }
 };
+
+  for (let i = 0; i < pages.length; i += MAX_CONCURRENT_PAGES) {
+    const batch = pages.slice(i, i + MAX_CONCURRENT_PAGES);
+    await Promise.all(batch.map((url, idx) => downloadPage(url, i + idx)));
+  }
+}
 
 // ─────────────────────────────────────────────────────────────
 // 🗜️ Create ZIP archive
