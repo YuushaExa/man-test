@@ -339,7 +339,7 @@ async function downloadPages(pages, chapDir) {
         console.error(`❌ Giving up on page ${pageIdx + 1}: ${pageUrl}`);
         throw new Error(`Failed page ${pageIdx + 1}: ${err.message}`);
       }
-      await new Promise(r => setTimeout(r, 400 * Math.pow(2, attempt)));
+      await new Promise(r => setTimeout(r, 2000 * Math.pow(2, attempt)));
     }
   }
 };
