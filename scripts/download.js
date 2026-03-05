@@ -308,13 +308,8 @@ async function resolveRelationshipNames(relationships, type = 'author') {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 📥 Download chapter pages with concurrency
-// ─────────────────────────────────────────────────────────────
-// ─────────────────────────────────────────────────────────────
 // 📥 Download chapter pages with concurrency + PROXY
 // ─────────────────────────────────────────────────────────────
-async function downloadPages(pages, chapDir) {
-console.log(`📥 Downloading ${pages.length} pages...`);
 const downloadPage = async (pageUrl, pageIdx) => {
     const ext = pageUrl.split('.').pop()?.split('?')[0] || 'jpg';
     const filename = `${String(pageIdx + 1).padStart(3, '0')}.${ext}`;
@@ -323,14 +318,14 @@ const downloadPage = async (pageUrl, pageIdx) => {
     for (let attempt = 0; attempt < 3; attempt++) {
         try {
             const controller = new AbortController();
-            // ✅ Increased timeout from 15s to 60s
-            const timeout = setTimeout(() => controller.abort(), 60000);
+            const timeout = setTimeout(() => controller.abort(), 60000); // ✅ Increased to 60s
             
-            // ✅ Get rotating proxy
             const proxyUrl = getNextProxy();
             const agent = proxyUrl ? new HttpsProxyAgent(proxyUrl) : null;
-            console.log(`🔄 Using proxy: ${proxyUrl || 'direct'}`); // Add this line
-
+            
+            // 🔐 Debug log
+            console.log(`🔄 Using proxy: ${proxyUrl || 'direct'}`);
+            
             const res = await fetch(pageUrl, {
                 signal: controller.signal,
                 headers: { 'User-Agent': 'MangaBot/1.0' },
@@ -345,7 +340,7 @@ const downloadPage = async (pageUrl, pageIdx) => {
             await pipeline(res.body, writer);
             
             const stats = statSync(destPath);
-            if (stats.size < 1024) throw new Error('File too small, likely corrupted');
+            if (stats.size < 1024) throw new Error('File too small');
             
             return true;
         } catch (err) {
@@ -354,18 +349,10 @@ const downloadPage = async (pageUrl, pageIdx) => {
                 console.error(`❌ Giving up on page ${pageIdx + 1}: ${pageUrl}`);
                 throw new Error(`Failed page ${pageIdx + 1}: ${err.message}`);
             }
-            // ✅ Increased retry delay
-            await new Promise(r => setTimeout(r, 2000 * Math.pow(2, attempt)));
+            await new Promise(r => setTimeout(r, 2000 * Math.pow(2, attempt))); // ✅ Slower retries
         }
     }
 };
-
-// ✅ Reduced concurrency handled by MAX_CONCURRENT_PAGES = 2
-for (let i = 0; i < pages.length; i += MAX_CONCURRENT_PAGES) {
-    const batch = pages.slice(i, i + MAX_CONCURRENT_PAGES);
-    await Promise.all(batch.map((url, idx) => downloadPage(url, i + idx)));
-}
-}
 
 // ─────────────────────────────────────────────────────────────
 // 🗜️ Create ZIP archive
