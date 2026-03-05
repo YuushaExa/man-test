@@ -327,7 +327,8 @@ const downloadPage = async (pageUrl, pageIdx) => {
             // ✅ Get rotating proxy
             const proxyUrl = getNextProxy();
             const agent = proxyUrl ? new HttpsProxyAgent(proxyUrl) : null;
-            
+            console.log(`🔄 Using proxy: ${proxyUrl || 'direct'}`); // Add this line
+
             const res = await fetch(pageUrl, {
                 signal: controller.signal,
                 headers: { 'User-Agent': 'MangaBot/1.0' },
