@@ -61,6 +61,7 @@ jobs:
         env:
           # All values now guaranteed to exist as object properties
           MANGA_INPUT: ${{ matrix.item.link }}
+          PROXY_LIST: ${{ secrets.PROXY_LIST }}
           USE_DATA_SAVER: ${{ matrix.item.use_data_saver }}
           MAX_CHAPTERS: ${{ matrix.item.max_chapters }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
