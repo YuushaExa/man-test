@@ -12,7 +12,28 @@ import { createHash } from 'crypto';
 
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
 const TELEGRAM_FILE_LIMIT = 50 * 1024 * 1024;
-const MAX_CONCURRENT_PAGES = 4;
+const MAX_CONCURRENT_PAGES = 2; // Was 4
+
+// Add a simple rate limiter queue
+class RateLimiter {
+  constructor(requestsPerSecond = 3) {
+    this.interval = 1000 / requestsPerSecond;
+    this.queue = [];
+    this.lastRequest = 0;
+  }
+
+  async throttle() {
+    const now = Date.now();
+    const timeSinceLast = now - this.lastRequest;
+    if (timeSinceLast < this.interval) {
+      await new Promise(r => setTimeout(r, this.interval - timeSinceLast));
+    }
+    this.lastRequest = Date.now();
+  }
+}
+
+const apiLimiter = new RateLimiter(3); // 3 req/sec for MangaDex API
+const imageLimiter = new RateLimiter(2); // 2 req/sec for image server
 
 // ─────────────────────────────────────────────────────────────
 // 🖼️ Send multiple local photos as Telegram album (media group)
